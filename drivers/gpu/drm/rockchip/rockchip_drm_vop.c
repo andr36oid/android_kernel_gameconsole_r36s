@@ -1411,6 +1411,98 @@ static void rockchip_vop_crtc_fb_gamma_get(struct drm_crtc *crtc, u16 *red,
 	*blue = b * 0xffff / (lut_len - 1);
 }
 
+/*
+ * color_lut: a colour table for the whole screen, applied by the VOP's
+ * gamma LUT while scanning out, so it costs nothing per frame. Android
+ * uses it for Night Light and extra dim instead of a SurfaceFlinger
+ * colour matrix, which would force GPU composition of every frame.
+ *
+ * Read: the current table, one packed entry per line in hex.
+ * Write: lut_len packed hex entries separated by white space, or "off"
+ * (identity table). An entry is r * lut_len^2 + g * lut_len + b, as in
+ * vop->lut; with the usual 256 entries that is 0xRRGGBB.
+ *
+ * The VOP must switch the LUT off for one frame to rewrite it, so every
+ * write shows one frame without the table. Write only on changes.
+ */
+static ssize_t color_lut_show(struct device *dev,
+			      struct device_attribute *attr, char *buf)
+{
+	struct vop *vop = dev_get_drvdata(dev);
+	ssize_t len = 0;
+	u32 i;
+
+	if (!vop->lut)
+		return -ENODEV;
+
+	for (i = 0; i < vop->lut_len && len < PAGE_SIZE - 12; i++)
+		len += scnprintf(buf + len, PAGE_SIZE - len, "%x\n",
+				 vop->lut_active ? vop->lut[i] :
+				 i * vop->lut_len * vop->lut_len +
+				 i * vop->lut_len + i);
+
+	return len;
+}
+
+static ssize_t color_lut_store(struct device *dev,
+			       struct device_attribute *attr,
+			       const char *buf, size_t count)
+{
+	struct vop *vop = dev_get_drvdata(dev);
+	struct drm_crtc *crtc = &vop->crtc;
+	u32 lut_len = vop->lut_len;
+	u32 max = lut_len * lut_len * lut_len;
+	const char *p = buf;
+	u32 *lut;
+	u32 i;
+	int n;
+
+	if (!vop->lut || !vop->lut_regs || !lut_len)
+		return -ENODEV;
+
+	lut = kmalloc_array(lut_len, sizeof(*lut), GFP_KERNEL);
+	if (!lut)
+		return -ENOMEM;
+
+	if (sysfs_streq(buf, "off")) {
+		for (i = 0; i < lut_len; i++)
+			lut[i] = i * lut_len * lut_len + i * lut_len + i;
+	} else {
+		for (i = 0; i < lut_len; i++) {
+			if (sscanf(p, "%x%n", &lut[i], &n) != 1 ||
+			    lut[i] >= max) {
+				kfree(lut);
+				return -EINVAL;
+			}
+			p += n;
+		}
+	}
+
+	drm_modeset_lock(&crtc->mutex, NULL);
+	vop_lock(vop);
+	memcpy(vop->lut, lut, lut_len * sizeof(*lut));
+	if (vop->is_enabled)
+		vop_crtc_load_lut(crtc);
+	else
+		vop->lut_active = true; /* loaded when the screen comes on */
+	if (crtc->gamma_store && crtc->gamma_size == lut_len) {
+		u16 *r_base = crtc->gamma_store;
+		u16 *g_base = r_base + lut_len;
+		u16 *b_base = g_base + lut_len;
+
+		for (i = 0; i < lut_len; i++)
+			rockchip_vop_crtc_fb_gamma_get(crtc, &r_base[i],
+						       &g_base[i], &b_base[i],
+						       i);
+	}
+	vop_unlock(vop);
+	drm_modeset_unlock(&crtc->mutex);
+
+	kfree(lut);
+	return count;
+}
+static DEVICE_ATTR_RW(color_lut);
+
 static void vop_power_enable(struct drm_crtc *crtc)
 {
 	struct vop *vop = to_vop(crtc);
@@ -4582,6 +4674,9 @@ static int vop_bind(struct device *dev, struct device *master, void *data)
 	if (ret)
 		return ret;
 
+	if (vop->lut && device_create_file(dev, &dev_attr_color_lut))
+		dev_warn(dev, "failed to create color_lut\n");
+
 	pm_runtime_enable(&pdev->dev);
 
 
@@ -4617,6 +4712,7 @@ static void vop_unbind(struct device *dev, struct device *master, void *data)
 {
 	struct vop *vop = dev_get_drvdata(dev);
 
+	device_remove_file(dev, &dev_attr_color_lut);
 	pm_runtime_disable(dev);
 	vop_destroy_crtc(vop);
 }
