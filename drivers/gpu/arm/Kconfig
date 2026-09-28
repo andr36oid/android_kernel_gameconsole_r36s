@@ -43,6 +43,13 @@ config MALI_BIFROST_FOR_ANDROID
 config MALI_BIFROST_FOR_LINUX
 	bool "Mali Bifrost for Linux only"
 
+config MALI_BIFROST_G7P1_FOR_ANDROID
+	bool "Mali Bifrost g7p1 for Android"
+	help
+	  Build the g7p1-01bet0 kbase (UK 11.31) from drivers/gpu/arm/bifrost_g7p1
+	  instead of the g2p0 one. It matches the Rockchip Android 12 Mali-G31
+	  userspace driver, which has Vulkan. It uses the same Kconfig options.
+
 endchoice
 
 source "drivers/gpu/arm/bifrost/Kconfig"
