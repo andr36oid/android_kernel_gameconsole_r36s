@@ -52,8 +52,14 @@
 
 &rk817 {
 	battery {
+		/* Stock battery values (stock DTB dumped from the K36S). */
+		ocv_table = <3500 3527 3552 3572 3587 3599 3611
+			3624 3639 3660 3695 3731 3766 3804
+			3846 3889 3938 3990 4046 4102 4176>;
 		design_capacity = <2775>;
 		design_qmax = <3052>;
 		bat_res = <101>;
+		power_off_thresd = <3500>;
+		zero_algorithm_vol = <3850>;
 	};
 };
