@@ -4622,6 +4622,25 @@ static int _dwc2_hcd_resume(struct usb_hcd *hcd)
     
 	if (hsotg->params.power_down != DWC2_POWER_DOWN_PARAM_PARTIAL) {
 		hsotg->lx_state = DWC2_L0;
+		/*
+		 * The USB power domain can be switched off during system sleep.
+		 * The core then comes back in its reset state (no interrupts, port
+		 * not powered) and nothing on the port works until a restart. The
+		 * grf keeps the port forced to host, so the device mode branch
+		 * above does not catch it. Set the host up again, like that branch.
+		 */
+		if (!(dwc2_readl(hsotg, GAHBCFG) & GAHBCFG_GLBL_INTR_EN)) {
+			spin_unlock_irqrestore(&hsotg->lock, flags);
+			dev_info(hsotg->dev, "core lost its state in sleep, setting up the host again\n");
+			msleep(200);
+
+			hsotg->op_state = OTG_STATE_A_HOST;
+			if (dwc2_core_init(hsotg, true))
+				return ret;
+			dwc2_enable_global_interrupts(hsotg);
+			dwc2_hcd_start(hsotg);
+			return ret;
+		}
 		goto unlock;
 	}
 
