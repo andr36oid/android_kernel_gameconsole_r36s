@@ -745,8 +745,9 @@ static void joypad_poll(struct input_polled_dev *poll_dev)
 	struct joypad *joypad = poll_dev->private;
 
 	if (joypad->enable) {
-		joypad_adc_check(poll_dev);
+		/* buttons first: the four stick conversions take a while */
 		joypad_gpio_check(poll_dev);
+		joypad_adc_check(poll_dev);
 	}
 	if (poll_dev->poll_interval != joypad->poll_interval) {
 		mutex_lock(&joypad->lock);
