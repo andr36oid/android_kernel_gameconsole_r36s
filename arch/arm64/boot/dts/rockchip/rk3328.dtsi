@@ -361,6 +361,7 @@
 
 			pd_hevc@RK3328_PD_HEVC {
 				reg = <RK3328_PD_HEVC>;
+				clocks = <&cru SCLK_VENC_CORE>;
 			};
 			pd_video@RK3328_PD_VIDEO {
 				reg = <RK3328_PD_VIDEO>;

@@ -1561,7 +1561,7 @@ static struct hid_report *hid_get_report(struct hid_report_enum *report_enum,
 void __hid_request(struct hid_device *hid, struct hid_report *report,
 		int reqtype)
 {
-	char *buf;
+	char *buf, *data_buf;
 	int ret;
 	u32 len;
 
@@ -1569,13 +1569,19 @@ void __hid_request(struct hid_device *hid, struct hid_report *report,
 	if (!buf)
 		return;
 
+	data_buf = buf;
 	len = hid_report_len(report);
 
-	if (reqtype == HID_REQ_SET_REPORT)
-		hid_output_report(report, buf);
+	if (report->id == 0) {
+		/* reserve the first byte for the report ID */
+		data_buf++;
+		len++;
+	}
 
-	ret = hid->ll_driver->raw_request(hid, report->id, buf, len,
-					  report->type, reqtype);
+	if (reqtype == HID_REQ_SET_REPORT)
+		hid_output_report(report, data_buf);
+
+	ret = hid_hw_raw_request(hid, report->id, buf, len, report->type, reqtype);
 	if (ret < 0) {
 		dbg_hid("unable to complete request: %d\n", ret);
 		goto out;

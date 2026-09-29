@@ -2575,8 +2575,12 @@ static int mmc_rescan_try_freq(struct mmc_host *host, unsigned freq)
 
 	mmc_go_idle(host);
 
-	if (!(host->caps2 & MMC_CAP2_NO_SD))
-		mmc_send_if_cond(host, host->ocr_avail);
+	if (!(host->caps2 & MMC_CAP2_NO_SD)) {
+		if (mmc_send_if_cond_pcie(host, host->ocr_avail))
+			goto out;
+		if (mmc_card_sd_express(host))
+			return 0;
+	}
 
 	/* Order's important: probe SDIO, then SD, then MMC */
 	if (!(host->caps2 & MMC_CAP2_NO_SDIO))
@@ -2614,6 +2618,9 @@ static int mmc_rescan_try_freq(struct mmc_host *host, unsigned freq)
 	if ((host->restrict_caps & RESTRICT_CARD_TYPE_EMMC) &&
 	    !mmc_attach_mmc(host))
 		return 0;
+#endif
+#ifdef MMC_STANDARD_PROBE
+out:
 #endif
 	mmc_power_off(host);
 	return -EIO;
