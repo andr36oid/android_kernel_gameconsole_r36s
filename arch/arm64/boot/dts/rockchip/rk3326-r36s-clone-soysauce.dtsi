@@ -157,6 +157,14 @@
 	};
 };
 
+/*
+ * GPIO1_C2 is the LCD enable line here, but UART1 took it as its CTS pin,
+ * so the panel driver could not drive it. Stock turns UART1 off too.
+ */
+&uart1 {
+	status = "disabled";
+};
+
 &sdmmc {
 	no-1-8-v;
 	/delete-property/ sd-uhs-sdr12;
