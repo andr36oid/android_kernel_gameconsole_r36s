@@ -155,6 +155,14 @@ module_param_named(dbg_level, dbg_enable, int, 0644);
  */
 #define VOL_CHECK_MAX_CUR		1500
 #define VOL_CHECK_CNT			12
+/*
+ * How far the estimated OCV may be off, see rk817_bat_soc_fits_voltage():
+ * VOL_BAND_MV plus the drop across VOL_BAND_MOHM (how wrong bat_res may be)
+ * at the present current, then VOL_BAND_SOC more points.
+ */
+#define VOL_BAND_MV			40
+#define VOL_BAND_MOHM			70
+#define VOL_BAND_SOC			10
 
 #define MIN_FCC				500
 #define CAP_INVALID			0x80
@@ -1641,28 +1649,59 @@ static int rk817_bat_est_ocv(struct rk817_battery_device *battery,
 }
 
 /*
+ * Does a charge level (in %) fit an estimated open circuit voltage? The
+ * estimate is only good to some tens of mV (load steps, the bat_res guess, a
+ * cell still settling after charging), more so at high current. The OCV
+ * table is flat in the middle and steep near full and empty, so the same
+ * voltage error is worth 20 points at 50 % and 5 points near 100 %. Accept
+ * the levels that the voltage error either way maps to, plus VOL_BAND_SOC
+ * points, and never more than max_soc_offset from the voltage's own level.
+ * With the R36S table and a light load, 100 % now needs an OCV of about
+ * 3.96 V, where the flat 30 points let 100 % through at 3.89 V (72 %).
+ */
+static bool rk817_bat_soc_fits_voltage(struct rk817_battery_device *battery,
+				       int soc, int ocv_vol, int current_ma)
+{
+	int ocv_soc = rk817_bat_vol_to_soc(battery, ocv_vol);
+	int off = battery->pdata->max_soc_offset;
+	int band = VOL_BAND_MV + abs(current_ma) * VOL_BAND_MOHM / 1000;
+	int lo, hi;
+
+	lo = rk817_bat_vol_to_soc(battery, ocv_vol - band) - VOL_BAND_SOC;
+	hi = rk817_bat_vol_to_soc(battery, ocv_vol + band) + VOL_BAND_SOC;
+	lo = max(lo, ocv_soc - off);
+	hi = min(hi, ocv_soc + off);
+
+	return soc >= lo && soc <= hi;
+}
+
+/*
  * The saved dsoc and remaining capacity live in RK817 scratch registers that
  * survive reboots and are also written by U-Boot's and other OSes' gauge
  * drivers (dArkOS, ArkOS) with their own OCV tables and capacities. U-Boot
  * sets FG_INIT on every boot, so we always take the "initialized" path and
  * inherit those values as they are. Treat them as garbage if they are out of
- * range, or if they are further from the voltage than max_soc_offset allows.
+ * range, or if they don't fit the battery voltage.
  */
 static bool rk817_bat_saved_soc_is_bogus(struct rk817_battery_device *battery,
-					 int pre_soc, int ocv_soc)
+					 int pre_soc, int ocv_vol,
+					 int current_ma)
 {
+	int ocv_soc = rk817_bat_vol_to_soc(battery, ocv_vol);
+
 	if (pre_soc < 0 || pre_soc > MAX_PERCENTAGE * 1000)
 		return true;
 
 	if ((pre_soc < 1000) && (ocv_soc >= 5))
 		return true;
 
-	return abs(pre_soc / 1000 - ocv_soc) >= battery->pdata->max_soc_offset;
+	return !rk817_bat_soc_fits_voltage(battery, pre_soc / 1000, ocv_vol,
+					   current_ma);
 }
 
 static void rk817_bat_not_first_pwron(struct rk817_battery_device *battery)
 {
-	int now_cap, pre_soc, pre_cap, ocv_cap, ocv_soc, ocv_vol;
+	int now_cap, pre_soc, pre_cap, ocv_cap, ocv_soc, ocv_vol, cur;
 
 	battery->fcc = rk817_bat_get_fcc(battery);
 	pre_soc = rk817_bat_get_prev_dsoc(battery);
@@ -1724,13 +1763,13 @@ finish:
 	 * is only sampled at PMIC power up, so after a warm reboot it can be
 	 * hours old; use the live voltage instead.
 	 */
+	cur = rk817_bat_get_avg_current(battery);
 	ocv_vol = rk817_bat_est_ocv(battery,
-				    rk817_bat_get_battery_voltage(battery),
-				    rk817_bat_get_avg_current(battery));
+				    rk817_bat_get_battery_voltage(battery), cur);
 	ocv_soc = rk817_bat_vol_to_soc(battery, ocv_vol);
 	BAT_INFO("saved dsoc=%d cap=%d, voltage says %d%% (%dmV)\n",
 		 pre_soc, pre_cap, ocv_soc, ocv_vol);
-	if (rk817_bat_saved_soc_is_bogus(battery, pre_soc, ocv_soc)) {
+	if (rk817_bat_saved_soc_is_bogus(battery, pre_soc, ocv_vol, cur)) {
 		BAT_INFO("bogus saved dsoc: %d -> %d\n", pre_soc, ocv_soc * 1000);
 		pre_soc = ocv_soc * 1000;
 		pre_cap = rk817_bat_vol_to_cap(battery, ocv_vol);
