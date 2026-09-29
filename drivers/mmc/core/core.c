@@ -434,6 +434,12 @@ void mmc_wait_for_req_done(struct mmc_host *host, struct mmc_request *mrq)
 		__mmc_start_request(host, mrq);
 	}
 
+	/* While a new card in a slot is set up, say which command failed */
+	if (cmd->error && !host->card && mmc_card_is_removable(host))
+		pr_info("%s: CMD%u arg %#x failed while setting up the card: %d (resp %#x)\n",
+			mmc_hostname(host), cmd->opcode, cmd->arg, cmd->error,
+			cmd->resp[0]);
+
 	mmc_retune_release(host);
 }
 EXPORT_SYMBOL(mmc_wait_for_req_done);
@@ -1571,8 +1577,9 @@ int mmc_set_uhs_voltage(struct mmc_host *host, u32 ocr)
 
 power_cycle:
 	if (err) {
-		pr_debug("%s: Signal voltage switch failed, "
-			"power cycling card\n", mmc_hostname(host));
+		pr_warn("%s: Signal voltage switch failed, power cycling card (busy %d)\n",
+			mmc_hostname(host),
+			host->ops->card_busy ? host->ops->card_busy(host) : -1);
 		mmc_power_cycle(host, ocr);
 	}
 
