@@ -1440,7 +1440,8 @@ int kbase_gpu_munmap(struct kbase_context *kctx, struct kbase_va_region *reg)
 				/* The allocation could still have active mappings. */
 				if (user_buf->current_mapping_usage_count == 0) {
 					kbase_jd_user_buf_unmap(kctx, reg->gpu_alloc,
-						(reg->flags & KBASE_REG_GPU_WR));
+						(reg->flags & (KBASE_REG_CPU_WR |
+							       KBASE_REG_GPU_WR)));
 				}
 			}
 		}
@@ -4189,8 +4190,8 @@ void kbase_trace_jit_report_gpu_mem_trace_enabled(struct kbase_context *kctx,
 
 	addr_start = reg->heap_info_gpu_addr - jit_report_gpu_mem_offset;
 
-	ptr = kbase_vmap(kctx, addr_start, KBASE_JIT_REPORT_GPU_MEM_SIZE,
-			&mapping);
+	ptr = kbase_vmap_prot(kctx, addr_start, KBASE_JIT_REPORT_GPU_MEM_SIZE,
+			KBASE_REG_CPU_RD, &mapping);
 	if (!ptr) {
 		dev_warn(kctx->kbdev->dev,
 				"%s: JIT start=0x%llx unable to map memory near end pointer %llx\n",
@@ -4283,6 +4284,7 @@ int kbase_jd_user_buf_pin_pages(struct kbase_context *kctx,
 	struct mm_struct *mm = alloc->imported.user_buf.mm;
 	long pinned_pages;
 	long i;
+	int write;
 
 	if (WARN_ON(alloc->type != KBASE_MEM_TYPE_IMPORTED_USER_BUF))
 		return -EINVAL;
@@ -4297,35 +4299,37 @@ int kbase_jd_user_buf_pin_pages(struct kbase_context *kctx,
 	if (WARN_ON(reg->gpu_alloc->imported.user_buf.mm != current->mm))
 		return -EINVAL;
 
+	write = reg->flags & (KBASE_REG_CPU_WR | KBASE_REG_GPU_WR);
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 6, 0)
 	pinned_pages = get_user_pages(NULL, mm,
 			address,
 			alloc->imported.user_buf.nr_pages,
 #if KERNEL_VERSION(4, 4, 168) <= LINUX_VERSION_CODE && \
 KERNEL_VERSION(4, 5, 0) > LINUX_VERSION_CODE
-			reg->flags & KBASE_REG_GPU_WR ? FOLL_WRITE : 0,
+			write ? FOLL_WRITE : 0,
 			pages, NULL);
 #else
-			reg->flags & KBASE_REG_GPU_WR,
+			write,
 			0, pages, NULL);
 #endif
 #elif LINUX_VERSION_CODE < KERNEL_VERSION(4, 9, 0)
 	pinned_pages = get_user_pages_remote(NULL, mm,
 			address,
 			alloc->imported.user_buf.nr_pages,
-			reg->flags & KBASE_REG_GPU_WR,
+			write,
 			0, pages, NULL);
 #elif LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0)
 	pinned_pages = get_user_pages_remote(NULL, mm,
 			address,
 			alloc->imported.user_buf.nr_pages,
-			reg->flags & KBASE_REG_GPU_WR ? FOLL_WRITE : 0,
+			write ? FOLL_WRITE : 0,
 			pages, NULL);
 #else
 	pinned_pages = get_user_pages_remote(NULL, mm,
 			address,
 			alloc->imported.user_buf.nr_pages,
-			reg->flags & KBASE_REG_GPU_WR ? FOLL_WRITE : 0,
+			write ? FOLL_WRITE : 0,
 			pages, NULL, NULL);
 #endif
 
@@ -4554,7 +4558,8 @@ void kbase_unmap_external_resource(struct kbase_context *kctx,
 						kbase_reg_current_backed_size(reg),
 						kctx->as_nr);
 
-			if (reg && ((reg->flags & KBASE_REG_GPU_WR) == 0))
+			if (reg && ((reg->flags & (KBASE_REG_CPU_WR |
+						   KBASE_REG_GPU_WR)) == 0))
 				writeable = false;
 
 			kbase_jd_user_buf_unmap(kctx, alloc, writeable);
