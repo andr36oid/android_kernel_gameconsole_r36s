@@ -628,6 +628,8 @@ struct rk817_battery_device {
 	int				max_new_dsoc;
 	int				force_pre_dsoc;
 	int				force_new_dsoc;
+	/* the boot-time gauge decision, kept for gauge_boot in sysfs */
+	char				boot_info[200];
 
 	int				dbg_cap_low0;
 	int				dbg_pwr_dsoc;
@@ -1702,6 +1704,7 @@ static bool rk817_bat_saved_soc_is_bogus(struct rk817_battery_device *battery,
 static void rk817_bat_not_first_pwron(struct rk817_battery_device *battery)
 {
 	int now_cap, pre_soc, pre_cap, ocv_cap, ocv_soc, ocv_vol, cur;
+	bool bogus;
 
 	battery->fcc = rk817_bat_get_fcc(battery);
 	pre_soc = rk817_bat_get_prev_dsoc(battery);
@@ -1769,7 +1772,18 @@ finish:
 	ocv_soc = rk817_bat_vol_to_soc(battery, ocv_vol);
 	BAT_INFO("saved dsoc=%d cap=%d, voltage says %d%% (%dmV)\n",
 		 pre_soc, pre_cap, ocv_soc, ocv_vol);
-	if (rk817_bat_saved_soc_is_bogus(battery, pre_soc, ocv_vol, cur)) {
+	bogus = rk817_bat_saved_soc_is_bogus(battery, pre_soc, ocv_vol, cur);
+	/*
+	 * Who handed over what: the USB uevent spam pushes these boot lines
+	 * out of dmesg within minutes, so keep them for gauge_boot.
+	 */
+	snprintf(battery->boot_info, sizeof(battery->boot_info),
+		 "saved_dsoc=%d saved_cap=%d counter_cap=%d off_min=%u uboot_init=%d halt=%d ocv_mv=%d cur_ma=%d voltage_soc=%d %s\n",
+		 pre_soc, pre_cap, now_cap, battery->pwroff_min,
+		 battery->is_initialized, battery->is_halt, ocv_vol, cur,
+		 ocv_soc, bogus ? "reseeded" : "kept");
+	BAT_INFO("boot: %s", battery->boot_info);
+	if (bogus) {
 		BAT_INFO("bogus saved dsoc: %d -> %d\n", pre_soc, ocv_soc * 1000);
 		pre_soc = ocv_soc * 1000;
 		pre_cap = rk817_bat_vol_to_cap(battery, ocv_vol);
@@ -1797,10 +1811,14 @@ static void rk817_bat_rsoc_init(struct rk817_battery_device *battery)
 	    __func__, battery->is_first_power_on,
 	    battery->pwroff_min, battery->pwron_voltage);
 
-	if (battery->is_first_power_on)
+	if (battery->is_first_power_on) {
 		rk817_bat_first_pwron(battery);
-	else
+		snprintf(battery->boot_info, sizeof(battery->boot_info),
+			 "first_power_on pwron_mv=%d dsoc=%d\n",
+			 battery->pwron_voltage, battery->dsoc);
+	} else {
 		rk817_bat_not_first_pwron(battery);
+	}
 
 	 rk817_bat_save_dsoc(battery, battery->dsoc);
 }
@@ -3146,7 +3164,18 @@ static ssize_t design_capacity_default_mah_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(design_capacity_default_mah);
 
+/* how the charge level was picked at boot, see rk817_bat_not_first_pwron() */
+static ssize_t gauge_boot_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	struct rk817_battery_device *battery = dev_get_drvdata(dev);
+
+	return sprintf(buf, "%s", battery->boot_info);
+}
+static DEVICE_ATTR_RO(gauge_boot);
+
 static struct attribute *rk817_bat_attrs[] = {
+	&dev_attr_gauge_boot.attr,
 	&dev_attr_design_capacity_mah.attr,
 	&dev_attr_design_capacity_default_mah.attr,
 	NULL,
