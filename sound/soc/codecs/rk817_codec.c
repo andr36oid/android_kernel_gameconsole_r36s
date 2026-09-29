@@ -984,8 +984,22 @@ static int rk817_suspend(struct snd_soc_component *component)
 static int rk817_resume(struct snd_soc_component *component)
 {
     struct rk817_codec_priv *rk817 = snd_soc_component_get_drvdata(component);
-	
-	rk817_codec_power_up(component, RK817_CODEC_ALL);
+	int type = 0;
+
+	/*
+	 * Power up only what was in use before the suspend. Powering up
+	 * RK817_CODEC_ALL left the microphone amplifier and the ADC on after
+	 * every wake-up while no app records (capture path "MIC OFF" is not
+	 * written again, so nothing switched them off), and powered the DAC
+	 * with the playback path off. That drew current until the next
+	 * suspend.
+	 */
+	if (rk817->playback_path != OFF)
+		type |= RK817_CODEC_PLAYBACK;
+	if (rk817->capture_path != MIC_OFF)
+		type |= RK817_CODEC_CAPTURE;
+	if (type)
+		rk817_codec_power_up(component, type);
 
 	DBG("[%s] playback path %ld, spk %d, hp %d\n", __func__,
 		rk817->playback_path,
