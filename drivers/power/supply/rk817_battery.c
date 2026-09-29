@@ -3013,8 +3013,9 @@ static void rk817_bat_output_info(struct rk817_battery_device *battery)
  * handed over at boot. Nothing pulls a dsoc that went wrong back to the
  * battery, so a low value sticks until the next full charge. While
  * discharging at a moderate load, compare dsoc with the OCV table and
- * restart the gauge from the voltage if it has been off by more than
- * max_soc_offset for a minute.
+ * restart the gauge from the voltage if it has not fit the voltage
+ * (rk817_bat_soc_fits_voltage) for a minute. A flat max_soc_offset let a
+ * level of 96 % run on for 20 minutes at a voltage that said 66 %.
  */
 static void rk817_bat_voltage_check(struct rk817_battery_device *battery)
 {
@@ -3035,7 +3036,8 @@ static void rk817_bat_voltage_check(struct rk817_battery_device *battery)
 	ocv_soc = rk817_bat_vol_to_soc(battery, ocv_vol);
 	dsoc = battery->dsoc / 1000;
 
-	if (abs(dsoc - ocv_soc) < battery->pdata->max_soc_offset) {
+	if (rk817_bat_soc_fits_voltage(battery, dsoc, ocv_vol,
+				       battery->current_avg)) {
 		battery->vol_check_cnt = 0;
 		return;
 	}
