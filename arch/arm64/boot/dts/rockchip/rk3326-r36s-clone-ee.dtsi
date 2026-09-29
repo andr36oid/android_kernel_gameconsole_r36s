@@ -131,6 +131,16 @@
 	pwms = <&pwm1 0 25000 0>;
 };
 
+/*
+ * The R36S DT turns on DDR at 786 MHz. The stock firmware of these boards,
+ * the dArkOSRE ports and K4uanGP's andr36oid ports all leave it off.
+ */
+&dmc_opp_table {
+	opp-786000000 {
+		status = "disabled";
+	};
+};
+
 &{/rk817-sound} {
 	pinctrl-names = "default";
 	pinctrl-0 = <&hp_det>;
