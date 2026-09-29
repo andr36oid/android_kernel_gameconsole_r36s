@@ -1339,7 +1339,8 @@ static int joypad_probe(struct platform_device *pdev)
 	mutex_init(&joypad->lock);
 	platform_set_drvdata(pdev, joypad);
 
-	error = sysfs_create_group(&pdev->dev.kobj, &joypad_attr_group);
+	/* devm, so a deferred probe can add the group again on the retry */
+	error = devm_device_add_group(dev, &joypad_attr_group);
 	if (error) {
 		dev_err(dev, "create sysfs group fail, error: %d\n",
 			error);
