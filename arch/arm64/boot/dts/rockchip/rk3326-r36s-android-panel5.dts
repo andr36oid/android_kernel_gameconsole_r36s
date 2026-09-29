@@ -93,3 +93,12 @@
 			};
 	};
 };
+
+/*
+ * GPIO1_C2 is the LCD enable line on this panel, but UART1 took it as its
+ * CTS pin, so the panel driver could not drive it. Stock ArkOS turns UART1
+ * off for this panel too.
+ */
+&uart1 {
+	status = "disabled";
+};
