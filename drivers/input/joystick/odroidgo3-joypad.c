@@ -1065,7 +1065,7 @@ static int rumble_play_effect(struct input_dev *dev, void *data, struct ff_effec
 
 	joypad->level = (u16)CLAMP(boosted_level, 0, 0xffff);
 	
-	dev_info(joypad->dev,"joypad->level = %d",  joypad->level);
+	dev_dbg(joypad->dev, "joypad->level = %d", joypad->level);
 	schedule_work(&joypad->play_work);
 	return 0;
 }
