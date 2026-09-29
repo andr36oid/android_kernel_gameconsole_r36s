@@ -174,6 +174,19 @@ module_param_named(dbg_level, dbg_enable, int, 0644);
  */
 #define CHRG_LIMIT_MIN			60
 #define CHRG_LIMIT_HYST			5
+/*
+ * The limit pauses charging the way Rockchip's own code does it
+ * (rk817_bat_disable_charge in the 6.1 BSP and in U-Boot's fg_rk817):
+ * a battery low-temperature threshold of 0 puts the charger's TS window
+ * out of range, so it stops charging the battery but keeps feeding the
+ * system and keeps the battery switch under power-path control.
+ * 0xFF is the reset value (window always in range).
+ */
+#define CHRG_LIMIT_TS_PAUSE		0x00
+#define CHRG_LIMIT_TS_RUN		0xFF
+/* 5 s ticks after which a pause must show; then check it once */
+#define CHRG_LIMIT_CHECK_TICKS		6
+#define CHRG_LIMIT_CHECK_MA		100
 
 /* virtual params */
 #define VIRTUAL_CURRENT			1000
@@ -283,7 +296,7 @@ enum rk817_battery_fields {
 	FG_INIT, HALT_CNT_REG, CALC_REST_REGL, CALC_REST_REGH,
 	VOL_ADC_B3,  VOL_ADC_B2, VOL_ADC_B1, VOL_ADC_B0,
 	VOL_ADC_K3, VOL_ADC_K2, VOL_ADC_K1, VOL_ADC_K0,
-	CHRG_EN,
+	BAT_LTS_TS,
 	BAT_EXS, CHG_STS, BAT_OVP_STS, CHRG_IN_CLAMP,
 	CHIP_NAME_H, CHIP_NAME_L,
 	PLUG_IN_STS,
@@ -448,7 +461,7 @@ static const struct reg_field rk817_battery_reg_fields[] = {
 	[VOL_ADC_K2] = REG_FIELD(0xAE, 0, 7),
 	[VOL_ADC_K1] = REG_FIELD(0xAF, 0, 7),
 	[VOL_ADC_K0] = REG_FIELD(0xB0, 0, 7),
-	[CHRG_EN] = REG_FIELD(0xE4, 7, 7),
+	[BAT_LTS_TS] = REG_FIELD(0xE9, 0, 7),
 	[BAT_EXS] = REG_FIELD(0xEB, 7, 7),
 	[CHG_STS] = REG_FIELD(0xEB, 4, 6),
 	[BAT_OVP_STS] = REG_FIELD(0xEB, 3, 3),
@@ -645,6 +658,8 @@ struct rk817_battery_device {
 	int				cap_req;
 	int				chrg_limit;
 	bool				chrg_limit_hold;
+	bool				chrg_limit_broken;
+	int				chrg_limit_ticks;
 	struct wake_lock		chrg_limit_lock;
 	unsigned long			charge_count;
 	u8				plugin_trigger;
@@ -3033,23 +3048,67 @@ static void rk817_bat_voltage_check(struct rk817_battery_device *battery)
 
 /*
  * Charge limit (Settings > Battery on andr36oid). With the charger in and
- * the level at the limit, the charger is switched off (CHRG_EN). The PMIC
- * keeps powering the system from USB (USB_SYS_EN power path), so the
- * battery just sits there and the gauge keeps counting whatever small
- * current still flows. Charging starts again CHRG_LIMIT_HYST points below
- * the limit, when the limit is turned off, and whenever the charger goes
- * away, so a console that is unplugged always charges normally next time.
+ * the level at the limit, charging is paused through the TS window
+ * (BAT_LTS_TS, see CHRG_LIMIT_TS_PAUSE). Nothing else changes: the PMIC
+ * keeps powering the system from USB, the battery can still help out
+ * when the load is above the input limit, and it takes over at once when
+ * the charger is pulled. (The first version cleared 0xE4 bit 7, which the
+ * BSP calls CHRG_EN but the RK817 datasheet calls POWERPATH_EN, the
+ * battery switch. Nothing from Rockchip clears that bit at runtime.)
+ * Charging starts again CHRG_LIMIT_HYST points below the limit, when the
+ * limit is turned off, and whenever the charger goes away, so a console
+ * that is unplugged always charges normally next time.
  * The PMIC charges on its own while the SoC sleeps, so the console stays
  * awake while it is charging towards the limit (from the charger, not the
  * battery) and may only sleep once charging is off.
+ * If a board ignores the TS window (for example a TS pin tied to ground),
+ * the pause is undone after CHRG_LIMIT_CHECK_TICKS and the limit stays off
+ * until the next boot, so the status never claims a pause that isn't real.
  */
+static void rk817_bat_charge_limit_set(struct rk817_battery_device *battery,
+				       bool pause)
+{
+	/* forced: 0xE9 is cached, and the pause must reach the PMIC */
+	regmap_field_force_write(battery->rmap_fields[BAT_LTS_TS],
+				 pause ? CHRG_LIMIT_TS_PAUSE : CHRG_LIMIT_TS_RUN);
+}
+
+static int rk817_bat_charge_limit_ts(struct rk817_battery_device *battery)
+{
+	return (rk817_bat_field_read(battery, BAT_TS_H) << 8) |
+		rk817_bat_field_read(battery, BAT_TS_L);
+}
+
+static void rk817_bat_charge_limit_check(struct rk817_battery_device *battery,
+					 int limit)
+{
+	int sts;
+
+	if (++battery->chrg_limit_ticks != CHRG_LIMIT_CHECK_TICKS)
+		return;
+
+	sts = rk817_bat_field_read(battery, CHG_STS);
+	BAT_INFO("charge limit %d%%: paused, status %d, %dmA, ts 0x%04x\n",
+		 limit, sts, battery->current_avg,
+		 rk817_bat_charge_limit_ts(battery));
+	if ((sts == DEAD_CHRG || sts == TRICKLE_CHRG || sts == CC_OR_CV_CHRG) &&
+	    battery->current_avg > CHRG_LIMIT_CHECK_MA) {
+		rk817_bat_charge_limit_set(battery, false);
+		battery->chrg_limit_broken = true;
+		battery->chrg_limit_hold = false;
+		battery->change = true;
+		BAT_INFO("charge limit: this board keeps charging with the TS window closed, limit off until reboot\n");
+	}
+}
+
 static void rk817_bat_charge_limit(struct rk817_battery_device *battery)
 {
 	int limit = READ_ONCE(battery->chrg_limit);
 	int soc = rk817_bat_report_soc(battery);
 	bool active = limit > 0 && limit < MAX_PERCENTAGE &&
 		      battery->chip_id != RK809_ID &&
-		      battery->pdata->bat_mode != MODE_VIRTUAL;
+		      battery->pdata->bat_mode != MODE_VIRTUAL &&
+		      !battery->chrg_limit_broken;
 	bool hold = battery->chrg_limit_hold;
 
 	if (!active || !battery->is_charging)
@@ -3060,15 +3119,19 @@ static void rk817_bat_charge_limit(struct rk817_battery_device *battery)
 		hold = false;
 
 	if (hold != battery->chrg_limit_hold) {
-		rk817_bat_field_write(battery, CHRG_EN, hold ? 0 : 1);
+		rk817_bat_charge_limit_set(battery, hold);
 		battery->chrg_limit_hold = hold;
+		battery->chrg_limit_ticks = 0;
 		battery->change = true;
 		BAT_INFO("charge limit %d%%: charging %s at %d%% (%dmV, %dmA)\n",
 			 limit, hold ? "off" : "on", soc,
 			 battery->voltage_avg, battery->current_avg);
+	} else if (hold) {
+		rk817_bat_charge_limit_check(battery, limit);
 	}
 
-	if (active && battery->is_charging && !hold)
+	if (active && !battery->chrg_limit_broken &&
+	    battery->is_charging && !battery->chrg_limit_hold)
 		wake_lock(&battery->chrg_limit_lock);
 	else
 		wake_unlock(&battery->chrg_limit_lock);
@@ -3389,6 +3452,13 @@ static int rk817_battery_probe(struct platform_device *pdev)
 	rk817_bat_output_info(battery);
 	wake_lock_init(&battery->chrg_limit_lock, WAKE_LOCK_SUSPEND,
 		       "rk817_charge_limit");
+	/* a pause left over from a crash or hard reset must not stick */
+	if (battery->chip_id != RK809_ID &&
+	    battery->pdata->bat_mode != MODE_VIRTUAL &&
+	    rk817_bat_field_read(battery, BAT_LTS_TS) == CHRG_LIMIT_TS_PAUSE) {
+		rk817_bat_charge_limit_set(battery, false);
+		BAT_INFO("charge limit: cleared a pause left from the last run\n");
+	}
 	battery->bat_monitor_wq = alloc_ordered_workqueue("%s",
 			WQ_MEM_RECLAIM | WQ_FREEZABLE, "rk817-bat-monitor-wq");
 	INIT_DELAYED_WORK(&battery->bat_delay_work, rk817_battery_work);
@@ -3433,7 +3503,7 @@ static void rk817_battery_shutdown(struct platform_device *dev)
 
 	/* a switched-off console must always charge */
 	if (battery && battery->chrg_limit_hold)
-		rk817_bat_field_write(battery, CHRG_EN, 1);
+		rk817_bat_charge_limit_set(battery, false);
 }
 
 static time_t __maybe_unused rk817_get_rtc_sec(void)
