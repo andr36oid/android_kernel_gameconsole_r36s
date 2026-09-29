@@ -2059,6 +2059,7 @@ void kbase_mmu_as_term(struct kbase_device *kbdev, int i)
 	destroy_workqueue(kbdev->as[i].pf_wq);
 }
 
+#ifdef CONFIG_MALI_VECTOR_DUMP
 static size_t kbasep_mmu_dump_level(struct kbase_context *kctx, phys_addr_t pgd,
 		int level, char ** const buffer, size_t *size_left)
 {
@@ -2198,6 +2199,7 @@ fail_free:
 	return NULL;
 }
 KBASE_EXPORT_TEST_API(kbase_mmu_dump);
+#endif /* CONFIG_MALI_VECTOR_DUMP */
 
 void kbase_mmu_bus_fault_worker(struct work_struct *data)
 {
