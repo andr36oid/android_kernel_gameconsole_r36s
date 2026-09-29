@@ -603,6 +603,14 @@ static int rk817_playback_path_put(struct snd_kcontrol *kcontrol,
 	case RING_HP_NO_MIC:
 		if (pre_path == OFF)
 			rk817_codec_power_up(component, RK817_CODEC_PLAYBACK);
+		/*
+		 * Switch the speaker amplifier off (same value as in
+		 * playback_power_down_list): coming from the speaker path it
+		 * stayed enabled, so the speaker could hiss and drew current
+		 * while headphones were in use.
+		 */
+		snd_soc_component_write(component, RK817_CODEC_ACLASSD_CFG1,
+					0x69);
 		/* HP_CP_EN , CP 2.3V */
 		snd_soc_component_write(component, RK817_CODEC_AHP_CP, 0x11);
 		/* power on HP two stage opamp ,HP amplitude 0db */
