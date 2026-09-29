@@ -50,3 +50,22 @@
 		<0 RK_PB4 RK_FUNC_GPIO &pcfg_pull_none>,
 		<0 RK_PC1 RK_FUNC_GPIO &pcfg_pull_none>;
 };
+
+&rk817 {
+	battery {
+		/*
+		 * Stock EmuELEC battery values of the K36/HG36 boards (stock
+		 * DTBs dumped from HG36, ANS11, L35 and the E93995 R36S clones,
+		 * and the R36S-V20 2548/2549 firmware). Early K36 units shipped
+		 * a 2353 mAh table instead.
+		 */
+		ocv_table = <3500 3531 3558 3578 3595 3611 3628
+			3649 3675 3718 3767 3810 3849 3886
+			3919 3958 4006 4051 4081 4105 4172>;
+		design_capacity = <2808>;
+		design_qmax = <3089>;
+		bat_res = <150>;
+		power_off_thresd = <3500>;
+		zero_algorithm_vol = <3850>;
+	};
+};
