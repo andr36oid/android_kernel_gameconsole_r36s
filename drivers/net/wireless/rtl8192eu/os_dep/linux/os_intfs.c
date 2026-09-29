@@ -43,7 +43,7 @@ int rtw_preamble = PREAMBLE_LONG;/* long, short, auto */
 int rtw_scan_mode = 1;/* active, passive */
 /* int smart_ps = 1; */
 #ifdef CONFIG_POWER_SAVING
-	int rtw_power_mgnt = PS_MODE_MAX;
+	int rtw_power_mgnt = PS_MODE_MIN; /* wake every beacon: less delay than MAX */
 	#ifdef CONFIG_IPS_LEVEL_2
 		int rtw_ips_mode = IPS_LEVEL_2;
 	#else
