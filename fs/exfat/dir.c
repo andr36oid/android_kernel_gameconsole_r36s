@@ -91,7 +91,7 @@ static int exfat_readdir(struct inode *inode, loff_t *cpos, struct exfat_dir_ent
 
 	dentries_per_clu = sbi->dentries_per_clu;
 	max_dentries = (unsigned int)min_t(u64, MAX_EXFAT_DENTRIES,
-				(u64)EXFAT_CLU_TO_DEN(sbi->num_clusters, sbi));
+				EXFAT_CLU_TO_DEN((u64)sbi->num_clusters, sbi));
 
 	clu_offset = EXFAT_DEN_TO_CLU(dentry, sbi);
 	exfat_chain_dup(&clu, &dir);
