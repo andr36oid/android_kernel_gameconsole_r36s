@@ -146,9 +146,20 @@
 	};
 
 	battery {
-		design_capacity = <2808>;
-		design_qmax = <3089>;
-		bat_res = <150>;
+		/*
+		 * Stock EmuELEC battery values of the G80 boards (stock DTB
+		 * dumped from an R36S clone with Panel 5, E358874, and from the
+		 * G30). The ArkOS DTBs for G80C/G80D boards and the dArkOSRE
+		 * G80 ports use the same table and capacity.
+		 */
+		ocv_table = <3400 3445 3502 3552 3598 3637 3679
+			3733 3782 3823 3865 3890 3904 3929
+			3977 4017 4022 4038 4067 4123 4177>;
+		design_capacity = <3124>;
+		design_qmax = <3436>;
+		bat_res = <119>;
+		power_off_thresd = <3400>;
+		zero_algorithm_vol = <3850>;
 	};
 
 	codec {
