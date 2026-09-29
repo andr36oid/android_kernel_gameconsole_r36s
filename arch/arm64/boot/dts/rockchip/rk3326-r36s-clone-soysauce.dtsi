@@ -70,9 +70,21 @@
 	};
 
 	battery {
+		/*
+		 * Stock battery values of the Soy Sauce Y3506 V03/V04 firmware
+		 * (U-Boot DTBs of those batches, stock kernel DTB of the 253x
+		 * Panel 7 batch). The U-Boot of batches 2533 and 2551 carries
+		 * the ODROID-GO2 table instead; southoz's dArkOSRE ports use
+		 * this one for them too.
+		 */
+		ocv_table = <3400 3438 3486 3521 3550 3571 3586
+			3599 3612 3628 3655 3689 3719 3754
+			3794 3838 3887 3942 4005 4087 4177>;
 		design_capacity = <3156>;
 		design_qmax = <3471>;
 		bat_res = <132>;
+		power_off_thresd = <3500>;
+		zero_algorithm_vol = <3700>;
 	};
 
 	codec {
