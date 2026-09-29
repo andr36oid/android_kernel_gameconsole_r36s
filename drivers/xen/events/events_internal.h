@@ -8,6 +8,7 @@
  */
 #ifndef __EVENTS_INTERNAL_H__
 #define __EVENTS_INTERNAL_H__
+#include <linux/rcupdate.h>
 
 /* Interrupt types. */
 enum xen_irq_type {
@@ -33,6 +34,7 @@ enum xen_irq_type {
 struct irq_info {
 	struct list_head list;
 	struct list_head eoi_list;
+	struct rcu_work rwork;
 	short refcnt;
 	short spurious_cnt;
 	short type;		/* type */
@@ -47,7 +49,7 @@ struct irq_info {
 	unsigned short eoi_cpu;	/* EOI must happen on this cpu */
 	unsigned int irq_epoch;	/* If eoi_cpu valid: irq_epoch of event */
 	u64 eoi_time;		/* Time in jiffies when to EOI. */
-	spinlock_t lock;
+	raw_spinlock_t lock;
 
 	union {
 		unsigned short virq;
