@@ -52,13 +52,13 @@
 	no-mmc;
 };
 
-/* rumble motor ("moto-gpio" in the stock DTB, active high) */
-&leds {
-	vibrator {
-		label = "vibrator";
-		gpios = <&gpio3 RK_PA6 GPIO_ACTIVE_HIGH>;
-		linux,default-trigger = "transient";
-	};
+/*
+ * rumble motor ("moto-gpio" in the stock DTB, active high). The joypad
+ * drives it so games see it as gamepad rumble; led_pins keeps the pin
+ * pulled down until the joypad driver takes it.
+ */
+&joypad {
+	rumble-gpios = <&gpio3 RK_PA6 GPIO_ACTIVE_HIGH>;
 };
 
 &led_pins {
