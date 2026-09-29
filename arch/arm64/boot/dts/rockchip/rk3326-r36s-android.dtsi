@@ -132,6 +132,14 @@
                /* poll device interval (ms), adc read interval */
                poll-interval = <10>;
 
+               /*
+                 a button edge starts a poll at once instead of waiting
+                 up to poll-interval; changes within the debounce time
+                 after a reported change are ignored (contact bounce)
+               */
+               button-irq;
+               button-debounce-ms = <5>;
+
 		/* required for RG351MP */
 		invert-absx;
 		invert-absy;
