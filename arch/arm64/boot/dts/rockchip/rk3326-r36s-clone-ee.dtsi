@@ -303,3 +303,16 @@
 		};
 	};
 };
+
+/*
+ * The R36S debug UART (UART2 on pins M1) uses GPIO2_B4 and GPIO2_B6. On these
+ * boards GPIO2_B6 is a button (and GPIO2_B4 the stick mux enable on K36), so
+ * the joypad could not claim its pins and no button worked. No debug UART here.
+ */
+&uart2 {
+	status = "disabled";
+};
+
+&{/fiq-debugger} {
+	status = "disabled";
+};
