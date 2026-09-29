@@ -29,7 +29,7 @@
 					hfront-porch = <46>;
 					hsync-len = <2>;
 					hback-porch = <44>;
-					vfront-porch = <16>;
+					vfront-porch = <165>;	/* was 16: 77.4 Hz; 59.94 Hz like Panel 4, same pixel clock */
 					vsync-len = <2>;
 					vback-porch = <14>;
 					hsync-active = <0>;
