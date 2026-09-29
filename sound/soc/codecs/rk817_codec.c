@@ -995,6 +995,7 @@ static int rk817_resume(struct snd_soc_component *component)
 	case OFF:
 		break;
 	case SPK_PATH:
+	case RING_SPK:
 		if (!rk817->use_ext_amplifier) {
 			/* power on dac ibias/l/r */
 			snd_soc_component_write(component, RK817_CODEC_ADAC_CFG1,
@@ -1005,7 +1006,7 @@ static int rk817_resume(struct snd_soc_component *component)
 			/* CLASS D enable */
 			snd_soc_component_write(component, RK817_CODEC_ACLASSD_CFG1, 0xa5);
 			/* restart CLASS D, OCPP/N */
-			snd_soc_component_write(component, RK817_CODEC_ACLASSD_CFG2, 0xc4);
+			snd_soc_component_write(component, RK817_CODEC_ACLASSD_CFG2, 0xf7);
 		} else {
 			/* HP_CP_EN , CP 2.3V */
 			snd_soc_component_write(component, RK817_CODEC_AHP_CP, 0x11);
@@ -1020,6 +1021,9 @@ static int rk817_resume(struct snd_soc_component *component)
 		}
 		break;
 	case HP_PATH:
+	case HP_NO_MIC:
+	case RING_HP:
+	case RING_HP_NO_MIC:
 		/* HP_CP_EN , CP 2.3V */
 		snd_soc_component_write(component, RK817_CODEC_AHP_CP, 0x11);
 		/* power on HP two stage opamp ,HP amplitude 0db */
@@ -1032,6 +1036,7 @@ static int rk817_resume(struct snd_soc_component *component)
 				    DACMT_ENABLE, DACMT_DISABLE);
 		break;
 	case SPK_HP:
+	case RING_SPK_HP:
 		/* HP_CP_EN , CP 2.3V  */
 		snd_soc_component_write(component, RK817_CODEC_AHP_CP, 0x11);
 		/* power on HP two stage opamp ,HP amplitude 0db */
@@ -1048,11 +1053,40 @@ static int rk817_resume(struct snd_soc_component *component)
 			/* CLASS D enable */
 			snd_soc_component_write(component, RK817_CODEC_ACLASSD_CFG1, 0xa5);
 			/* restart CLASS D, OCPP/N */
-			snd_soc_component_write(component, RK817_CODEC_ACLASSD_CFG2, 0xc4);
+			snd_soc_component_write(component, RK817_CODEC_ACLASSD_CFG2, 0xf7);
 		}
 		break;
 	default:
 		return -EINVAL;
+	}
+
+	/*
+	 * rk817_codec_power_up() wrote the power-up default volume (0x0a,
+	 * -3.75 dB) to the DAC. Put back the volume of the active path, as
+	 * rk817_playback_path_put() does, so the loudness does not change
+	 * after a suspend (headphones got louder, the speaker quieter).
+	 */
+	switch (rk817->playback_path) {
+	case SPK_PATH:
+	case RING_SPK:
+		snd_soc_component_write(component, RK817_CODEC_DDAC_VOLL,
+					rk817->spk_volume);
+		snd_soc_component_write(component, RK817_CODEC_DDAC_VOLR,
+					rk817->spk_volume);
+		break;
+	case HP_PATH:
+	case HP_NO_MIC:
+	case RING_HP:
+	case RING_HP_NO_MIC:
+	case SPK_HP:
+	case RING_SPK_HP:
+		snd_soc_component_write(component, RK817_CODEC_DDAC_VOLL,
+					rk817->hp_volume);
+		snd_soc_component_write(component, RK817_CODEC_DDAC_VOLR,
+					rk817->hp_volume);
+		break;
+	default:
+		break;
 	}
 
 	return 0;
