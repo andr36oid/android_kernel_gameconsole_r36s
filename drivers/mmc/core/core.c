@@ -1819,6 +1819,8 @@ static void _mmc_detect_change(struct mmc_host *host, unsigned long delay,
  */
 void mmc_detect_change(struct mmc_host *host, unsigned long delay)
 {
+	/* The card may have been changed, so give it a new try */
+	host->rescan_failed = 0;
 	_mmc_detect_change(host, delay, true);
 }
 EXPORT_SYMBOL(mmc_detect_change);
@@ -2728,22 +2730,33 @@ void mmc_rescan(struct work_struct *work)
 	mmc_claim_host(host);
 	if (mmc_card_is_removable(host) && host->ops->get_cd &&
 			host->ops->get_cd(host) == 0) {
+		host->rescan_failed = 0;
 		mmc_power_off(host);
 		mmc_release_host(host);
 		goto out;
 	}
 
-
+	host->rescan_failed = 0;
  	for (i = 0; i < ARRAY_SIZE(freqs); i++) {
 		if (!mmc_rescan_try_freq(host, max(freqs[i], host->f_min))) {
+			host->rescan_failed = 0;
 			if (host->rescan_force) {
 				host->rescan_force = 0;
 				host->rescan_keep_power = 0;
 			}
  			break;
 		}
+		/*
+		 * A card is in the slot but did not come up. Remember that,
+		 * so resume does not start this again (see mmc_pm_notify).
+		 */
+		if (mmc_card_is_removable(host) && mmc_can_gpio_cd(host))
+			host->rescan_failed = 1;
  		if (freqs[i] <= host->f_min)
  			break;
+		/* A system suspend is waiting for us, stop trying */
+		if (host->rescan_disable)
+			break;
  	}
 	mmc_release_host(host);
 
@@ -2821,8 +2834,15 @@ static int mmc_pm_notify(struct notifier_block *notify_block,
 		spin_unlock_irqrestore(&host->lock, flags);
 		cancel_delayed_work_sync(&host->detect);
 
-		if (!host->bus_ops)
+		if (!host->bus_ops) {
+			/*
+			 * No card: let the idle controller power down now, as
+			 * it would a moment later, rather than go into system
+			 * suspend still running from a scan that just ended.
+			 */
+			pm_runtime_suspend(mmc_dev(host));
 			break;
+		}
 
 		/* Validate prerequisites for suspend */
 		if (host->bus_ops->pre_suspend)
@@ -2854,6 +2874,19 @@ static int mmc_pm_notify(struct notifier_block *notify_block,
 		spin_lock_irqsave(&host->lock, flags);
 		host->rescan_disable = 0;
 		spin_unlock_irqrestore(&host->lock, flags);
+		/*
+		 * A card that failed to set up is still in the slot: trying
+		 * again on every resume takes seconds with a card that does
+		 * not answer, and the next suspend has to wait for it. A
+		 * card detect change (mmc_detect_change) tries again.
+		 */
+		if (host->rescan_failed && !host->bus_ops) {
+			if (host->rescan_failed == 1)
+				pr_info("%s: card did not set up, not trying again on resume\n",
+					mmc_hostname(host));
+			host->rescan_failed = 2;
+			break;
+		}
 		_mmc_detect_change(host, 0, false);
 
 	}

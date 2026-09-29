@@ -415,7 +415,9 @@ struct mmc_host {
 	int			rescan_entered;	/* used with nonremovable devices */
 	int			rescan_force;	/* force rescan of (nonremovable) devices */
 	int			rescan_keep_power; /* Do not power off card */
-	
+	int			rescan_failed;	/* card present, but set up failed
+						 * (2: resume already skipped it) */
+
 	int			need_retune;	/* re-tuning is needed */
 	int			hold_retune;	/* hold off re-tuning */
 	unsigned int		retune_period;	/* re-tuning period in secs */
