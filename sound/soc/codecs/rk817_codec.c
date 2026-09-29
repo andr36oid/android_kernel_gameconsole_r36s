@@ -63,6 +63,17 @@ module_param_named(dbg_level, dbg_enable, int, 0644);
  */
 #define CAPTURE_VOLUME	(0x0)
 
+/*
+ * DDAC_MUTE_MIXCTL for the internal speaker amplifier: class D mode, which
+ * feeds the mono speaker (L+R)/2, plus the class D DAC high-pass filter at
+ * 100 Hz (bits 7 and 6:5, the chip's reset value). The tiny speaker cannot
+ * play bass anyway; filtering it out leaves headroom and can reduce
+ * distortion at high volume. Mainline Linux also turns this filter on for
+ * the speaker.
+ * It only acts on the class D DAC, not on the headphones.
+ */
+#define CLASSD_MIXCTL	(0xb0)
+
 #define CODEC_SET_SPK 1
 #define CODEC_SET_HP 2
 
@@ -568,7 +579,7 @@ static int rk817_playback_path_put(struct snd_kcontrol *kcontrol,
 			/* CLASS D mode */
 			snd_soc_component_write(component,
 						RK817_CODEC_DDAC_MUTE_MIXCTL,
-						0x10);
+						CLASSD_MIXCTL);
 			/* CLASS D enable */
 			snd_soc_component_write(component,
 						RK817_CODEC_ACLASSD_CFG1,
@@ -649,7 +660,7 @@ static int rk817_playback_path_put(struct snd_kcontrol *kcontrol,
 			/* CLASS D mode */
 			snd_soc_component_write(component,
 						RK817_CODEC_DDAC_MUTE_MIXCTL,
-						0x10);
+						CLASSD_MIXCTL);
 			/* CLASS D enable */
 			snd_soc_component_write(component,
 						RK817_CODEC_ACLASSD_CFG1,
@@ -1010,7 +1021,7 @@ static int rk817_resume(struct snd_soc_component *component)
 				      PWD_DACBIAS_ON | PWD_DACD_ON |
 				      PWD_DACL_ON | PWD_DACR_ON);
 			/* CLASS D mode */
-			snd_soc_component_write(component, RK817_CODEC_DDAC_MUTE_MIXCTL, 0x10);
+			snd_soc_component_write(component, RK817_CODEC_DDAC_MUTE_MIXCTL, CLASSD_MIXCTL);
 			/* CLASS D enable */
 			snd_soc_component_write(component, RK817_CODEC_ACLASSD_CFG1, 0xa5);
 			/* restart CLASS D, OCPP/N */
@@ -1057,7 +1068,7 @@ static int rk817_resume(struct snd_soc_component *component)
 
 		if (!rk817->use_ext_amplifier) {
 			/* CLASS D mode */
-			snd_soc_component_write(component, RK817_CODEC_DDAC_MUTE_MIXCTL, 0x10);
+			snd_soc_component_write(component, RK817_CODEC_DDAC_MUTE_MIXCTL, CLASSD_MIXCTL);
 			/* CLASS D enable */
 			snd_soc_component_write(component, RK817_CODEC_ACLASSD_CFG1, 0xa5);
 			/* restart CLASS D, OCPP/N */
