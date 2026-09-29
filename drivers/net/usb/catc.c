@@ -76,6 +76,16 @@ static const char driver_name[] = "catc";
 #define RX_PKT_SZ		1600	/* Max size of receive packet for F5U011 */
 
 /*
+ * USB endpoints.
+ */
+
+enum catc_usb_ep {
+	CATC_USB_EP_CONTROL	= 0,
+	CATC_USB_EP_BULK	= 1,
+	CATC_USB_EP_INT_IN	= 2,
+};
+
+/*
  * Control requests.
  */
 
@@ -782,11 +792,25 @@ static int catc_probe(struct usb_interface *intf, const struct usb_device_id *id
 	struct catc *catc;
 	u8 broadcast[ETH_ALEN];
 	int pktsz, ret;
+	static const u8 bulk_ep_addr[] = {
+		CATC_USB_EP_BULK | USB_DIR_OUT,
+		CATC_USB_EP_BULK | USB_DIR_IN,
+		0};
+	static const u8 int_ep_addr[] = {
+		CATC_USB_EP_INT_IN | USB_DIR_IN,
+		0};
 
 	if (usb_set_interface(usbdev,
 			intf->altsetting->desc.bInterfaceNumber, 1)) {
 		dev_err(dev, "Can't set altsetting 1.\n");
 		return -EIO;
+	}
+
+	/* Verify that all required endpoints are present */
+	if (!usb_check_bulk_endpoints(intf, bulk_ep_addr) ||
+	    !usb_check_int_endpoints(intf, int_ep_addr)) {
+		dev_err(dev, "Missing or invalid endpoints\n");
+		return -ENODEV;
 	}
 
 	netdev = alloc_etherdev(sizeof(struct catc));
