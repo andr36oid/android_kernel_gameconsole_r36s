@@ -5,6 +5,7 @@
 
 /dts-v1/;
 #include "rk3326-r36s-android.dtsi"
+#include "rk3326-r36s-square.dtsi"
 
 &dsi {
 	panel@0 {
