@@ -2141,17 +2141,22 @@ static int rk817_get_capacity_leve(struct rk817_battery_device *battery)
  * Charge left in the battery in uAh, as Android reads charge_counter.
  * remain_cap is the coulomb counter in uAh, fcc the full charge in mAh.
  * update_info already pulls the counter back when it runs past fcc; the
- * clamp only covers the few seconds until then.
+ * clamp only covers the few seconds until then. remain_cap is a u32: a
+ * counter that runs below zero near empty wraps to a huge value, which
+ * reads as negative here and is reported as 0, not as a full battery.
  */
 static int rk817_bat_charge_counter(struct rk817_battery_device *battery)
 {
-	u32 full = battery->fcc > 0 ? battery->fcc * 1000 : 0;
+	int full = battery->fcc > 0 ? battery->fcc * 1000 : 0;
+	int cap = (int)battery->remain_cap;
 
 	if (battery->pdata->bat_mode == MODE_VIRTUAL)
 		return battery->design_cap * 1000 / 100 * VIRTUAL_SOC;
-	if (full && battery->remain_cap > full)
+	if (cap < 0)
+		return 0;
+	if (full && cap > full)
 		return full;
-	return battery->remain_cap;
+	return cap;
 }
 
 static int rk817_battery_get_property(struct power_supply *psy,
