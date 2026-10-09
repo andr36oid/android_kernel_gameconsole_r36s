@@ -307,12 +307,14 @@
 /*
  * The R36S debug UART (UART2 on pins M1) uses GPIO2_B4 and GPIO2_B6. On these
  * boards GPIO2_B6 is a button (and GPIO2_B4 the stick mux enable on K36), so
- * the joypad could not claim its pins and no button worked. No debug UART here.
+ * the joypad could not claim its pins and no button worked. The debug console
+ * moves to UART5 (GPIO3_A1/A2) instead, like the stock firmware and dArkOS.
  */
 &uart2 {
 	status = "disabled";
 };
 
 &{/fiq-debugger} {
-	status = "disabled";
+	rockchip,serial-id = <5>;
+	pinctrl-0 = <&uart5_xfer>;
 };
