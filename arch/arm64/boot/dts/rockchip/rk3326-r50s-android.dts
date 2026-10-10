@@ -1087,7 +1087,6 @@
 
 &rk_rga {
 	status = "okay";
-	dma-coherent;
 };
 
 &rockchip_suspend {
