@@ -33,6 +33,7 @@
 #include <linux/rtc.h>
 #include <linux/timer.h>
 #include <linux/workqueue.h>
+#include <linux/pm_wakeup.h>
 
 static int dbg_enable;
 module_param_named(dbg_level, dbg_enable, int, 0644);
@@ -332,6 +333,8 @@ struct rk817_charger {
 	u8 plugout_trigger;
 	int plugin_irq;
 	int plugout_irq;
+	/* held while a charger is in: no deep sleep on the charger */
+	struct wakeup_source *charging_ws;
 };
 
 static enum power_supply_property rk817_ac_props[] = {
@@ -849,6 +852,19 @@ static void rk817_charge_set_chrg_param(struct rk817_charger *charge,
 
 	if (rk817_charge_online(charge) && rk817_charge_get_dsoc(charge) == 100)
 		charge->prop_status = POWER_SUPPLY_STATUS_FULL;
+
+	/*
+	 * andr36oid: on the charger Android wakes every 60 s to check the
+	 * battery, and one of those deep sleeps sometimes never wakes again
+	 * (rockchip trust firmware, no source). Stay out of deep sleep while a
+	 * charger is in; the screen still goes off and apps still pause.
+	 */
+	if (charge->charging_ws) {
+		if (rk817_charge_online(charge))
+			__pm_stay_awake(charge->charging_ws);
+		else
+			__pm_relax(charge->charging_ws);
+	}
 }
 
 static void rk817_charge_set_otg_state(struct rk817_charger *charge, int state)
@@ -1492,6 +1508,8 @@ static irqreturn_t rk817_plug_in_isr(int irq, void *cg)
 
 	charge = (struct rk817_charger *)cg;
 	charge->plugin_trigger = 1;
+	/* awake until the charger type is known and Android has seen it */
+	pm_wakeup_event(charge->dev, 3000);
 	queue_delayed_work(charge->usb_charger_wq, &charge->irq_work,
 			   msecs_to_jiffies(10));
 
@@ -1504,6 +1522,8 @@ static irqreturn_t rk817_plug_out_isr(int irq, void *cg)
 
 	charge = (struct rk817_charger *)cg;
 	charge->plugout_trigger = 1;
+	/* awake until the charger type is known and Android has seen it */
+	pm_wakeup_event(charge->dev, 3000);
 	queue_delayed_work(charge->usb_charger_wq, &charge->irq_work,
 			   msecs_to_jiffies(10));
 
@@ -1548,6 +1568,9 @@ static int rk817_charge_init_irqs(struct rk817_charger *charge)
 
 	charge->plugin_irq = plug_in_irq;
 	charge->plugout_irq = plug_out_irq;
+	/* plugging a charger in (or out) wakes the console */
+	enable_irq_wake(plug_in_irq);
+	enable_irq_wake(plug_out_irq);
 
 	INIT_DELAYED_WORK(&charge->irq_work, rk817_charge_irq_delay_work);
 
@@ -1612,21 +1635,28 @@ static int rk817_charge_probe(struct platform_device *pdev)
 
 	rk817_charge_pre_init(charge);
 
+	device_init_wakeup(charge->dev, true);
+	charge->charging_ws = wakeup_source_register(charge->dev,
+						     "rk817_charging");
+
 	ret = rk817_charge_init_power_supply(charge);
 	if (ret) {
 		dev_err(charge->dev, "init power supply fail!\n");
+		wakeup_source_unregister(charge->charging_ws);
 		return ret;
 	}
 
 	ret = rk817_charge_init_dc(charge);
 	if (ret) {
 		dev_err(charge->dev, "init dc failed!\n");
+		wakeup_source_unregister(charge->charging_ws);
 		return ret;
 	}
 
 	ret = rk817_charge_usb_init(charge);
 	if (ret) {
 		dev_err(charge->dev, "init usb failed!\n");
+		wakeup_source_unregister(charge->charging_ws);
 		return ret;
 	}
 
@@ -1677,6 +1707,7 @@ irq_fail:
 		rk_bc_detect_notifier_unregister(&charge->bc_nb);
 	}
 
+	wakeup_source_unregister(charge->charging_ws);
 	return ret;
 }
 
