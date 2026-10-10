@@ -10,6 +10,7 @@
 
 /dts-v1/;
 #include "rk3326-r36s-clone-ee-k36.dtsi"
+#include "rk3326-r36s-square.dtsi"
 
 / {
 	model = "T16 Max (experimental)";

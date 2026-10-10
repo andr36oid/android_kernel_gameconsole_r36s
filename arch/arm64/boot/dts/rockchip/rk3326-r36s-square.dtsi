@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * For the 720x720 (4 inch) screens. Android's init turns every value in
+ * /firmware/android into a ro.boot.* property, so this gives
+ * ro.boot.lcd_density = 200. The vendor init.rc uses it as the screen
+ * density. At the 640x480 density (178) a 720x720 screen is 647 dp wide and
+ * Android picks its tablet layouts (600 dp and up); at 200 it is 576 dp,
+ * the same width in dp as the 640x480 screen, and text has about the same
+ * physical size as on a 3.5 inch R36S.
+ */
+
+/ {
+	firmware {
+		android {
+			compatible = "android,firmware";
+			lcd_density = "200";
+		};
+	};
+};
