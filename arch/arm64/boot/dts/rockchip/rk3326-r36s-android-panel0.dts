@@ -53,7 +53,7 @@
 					hfront-porch = <450>;
 					hsync-len = <46>;
 					hback-porch = <450>;
-					vfront-porch = <17>;
+					vfront-porch = <27>;	/* was 17: 61.2 Hz; 60.05 Hz, same pixel clock */
 					vsync-len = <5>;
 					vback-porch = <13>;
 					hsync-active = <0>;
