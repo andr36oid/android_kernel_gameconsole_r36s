@@ -34,6 +34,13 @@
 
 &leds {
 	/delete-node/ vibrator;
+
+	/* Charge LED: no driver reads the old chg_led_gpio property */
+	charge {
+		label = "charge";
+		gpios = <&gpio0 RK_PB5 GPIO_ACTIVE_HIGH>;
+		linux,default-trigger = "battery-charging";
+	};
 };
 
 &joypad {
@@ -334,7 +341,6 @@
 
 	charger {
 		/delete-property/ bat_low_gpio;
-		chg_led_gpio = <&gpio0 RK_PB5 GPIO_ACTIVE_HIGH>;
 		chrg_finish_cur = <300>;
 	};
 };
