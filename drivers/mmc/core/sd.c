@@ -1238,6 +1238,21 @@ static int _mmc_sd_resume(struct mmc_host *host)
 
 	mmc_power_up(host, host->card->ocr);
 	err = mmc_sd_init_card(host, host->card->ocr, host->card);
+	if (err) {
+		/*
+		 * A card still busy from before the suspend can make the
+		 * first command time out. Retry once after a power cycle:
+		 * a failed resume is reported as success, leaving queued
+		 * requests to hang forever.
+		 */
+		pr_warn("%s: resume failed (%d), retrying after a power cycle\n",
+			mmc_hostname(host), err);
+		mmc_power_cycle(host, host->card->ocr);
+		err = mmc_sd_init_card(host, host->card->ocr, host->card);
+		if (err)
+			pr_err("%s: card could not be re-initialised on resume (%d)\n",
+			       mmc_hostname(host), err);
+	}
 	mmc_card_clr_suspended(host->card);
 
 out:
