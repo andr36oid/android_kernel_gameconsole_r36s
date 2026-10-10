@@ -607,6 +607,15 @@ static int __maybe_unused dwc2_suspend(struct device *dev)
 	struct dwc2_hsotg *dwc2 = dev_get_drvdata(dev);
 	int ret = 0;
 
+	/*
+	 * If the last core soft reset timed out, the core never came out of
+	 * reset (e.g. no UTMI clock because the controller was activated
+	 * with no cable attached). Accessing the device CSRs would stall the
+	 * AHB and hang the machine; leave the controller alone.
+	 */
+	if (dwc2->core_reset_failed)
+		return 0;
+
 	if (dwc2_is_device_mode(dwc2))
 		dwc2_hsotg_suspend(dwc2);
 
@@ -620,6 +629,10 @@ static int __maybe_unused dwc2_resume(struct device *dev)
 {
 	struct dwc2_hsotg *dwc2 = dev_get_drvdata(dev);
 	int ret = 0;
+
+	/* A core that failed its last soft reset cannot be safely touched. */
+	if (dwc2->core_reset_failed)
+		return 0;
 
 	if (dwc2->ll_hw_enabled) {
 		ret = __dwc2_lowlevel_hw_enable(dwc2);

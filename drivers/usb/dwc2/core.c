@@ -527,6 +527,7 @@ int dwc2_core_reset(struct dwc2_hsotg *hsotg, bool skip_wait)
 	if (dwc2_hsotg_wait_bit_clear(hsotg, GRSTCTL, GRSTCTL_CSFTRST, 10000)) {
 		dev_warn(hsotg->dev, "%s: HANG! Soft Reset timeout GRSTCTL GRSTCTL_CSFTRST\n",
 			 __func__);
+		hsotg->core_reset_failed = 1;
 		return -EBUSY;
 	}
 
@@ -534,11 +535,14 @@ int dwc2_core_reset(struct dwc2_hsotg *hsotg, bool skip_wait)
 	if (dwc2_hsotg_wait_bit_set(hsotg, GRSTCTL, GRSTCTL_AHBIDLE, 10000)) {
 		dev_warn(hsotg->dev, "%s: HANG! AHB Idle timeout GRSTCTL GRSTCTL_AHBIDLE\n",
 			 __func__);
+		hsotg->core_reset_failed = 1;
 		return -EBUSY;
 	}
 
 	if (wait_for_host_mode && !skip_wait)
 		dwc2_wait_for_mode(hsotg, true);
+
+	hsotg->core_reset_failed = 0;
 
 	return 0;
 }

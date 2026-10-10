@@ -836,6 +836,9 @@ struct dwc2_hregs_backup {
  * @ll_hw_enabled:	Status of low-level hardware resources.
  * @ll_phy_enabled	Status of low-level PHY resources.
  * @hibernated:		True if core is hibernated
+ * @core_reset_failed:	Set when the last core soft reset timed out; the
+ *			core CSRs may be inaccessible until a further
+ *			successful reset.
  * @frame_number:       Frame number read from the core. For both device
  *			and host modes. The value ranges are from 0
  *			to HFNUM_MAX_FRNUM.
@@ -1023,6 +1026,7 @@ struct dwc2_hsotg {
 	unsigned int ll_hw_enabled:1;
 	unsigned int ll_phy_enabled:1;
 	unsigned int hibernated:1;
+	unsigned int core_reset_failed:1;
 	u16 frame_number;
 
 	struct phy *phy;
