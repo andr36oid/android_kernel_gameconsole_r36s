@@ -1634,6 +1634,8 @@ br_multicast_leave_group(struct net_bridge *br,
 			if (!mp->ports && !mp->host_joined &&
 			    netif_running(br->dev))
 				mod_timer(&mp->timer, jiffies);
+
+			break;
 		}
 		goto out;
 	}
@@ -1791,7 +1793,9 @@ static void br_multicast_pim(struct net_bridge *br,
 	    pim_hdr_type(pimhdr) != PIM_TYPE_HELLO)
 		return;
 
+	spin_lock(&br->multicast_lock);
 	br_multicast_mark_router(br, port);
+	spin_unlock(&br->multicast_lock);
 }
 
 static int br_multicast_ipv4_rcv(struct net_bridge *br,

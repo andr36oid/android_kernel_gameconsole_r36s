@@ -852,16 +852,12 @@ static int kbase_api_mem_alloc(struct kbase_context *kctx,
 	u64 flags = alloc->in.flags;
 	u64 gpu_va;
 
-	rcu_read_lock();
-	/* Don't allow memory allocation until user space has set up the
-	 * tracking page (which sets kctx->process_mm). Also catches when we've
-	 * forked.
+	/* Don't allow memory allocation if the ioctl has been issued from a
+	 * forked child process using the mali device file fd inherited from
+	 * the parent process.
 	 */
-	if (rcu_dereference(kctx->process_mm) != current->mm) {
-		rcu_read_unlock();
+	if (kctx->process_mm != current->mm)
 		return -EINVAL;
-	}
-	rcu_read_unlock();
 
 	if (flags & BASEP_MEM_FLAGS_KERNEL_ONLY)
 		return -ENOMEM;

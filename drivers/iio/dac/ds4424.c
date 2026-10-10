@@ -144,7 +144,7 @@ static int ds4424_write_raw(struct iio_dev *indio_dev,
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
-		if (val < S8_MIN || val > S8_MAX)
+		if (val <= S8_MIN || val > S8_MAX)
 			return -EINVAL;
 
 		if (val > 0) {
@@ -235,12 +235,6 @@ static int ds4424_probe(struct i2c_client *client,
 	indio_dev->name = id->name;
 	indio_dev->dev.of_node = client->dev.of_node;
 	indio_dev->dev.parent = &client->dev;
-
-	if (!client->dev.of_node) {
-		dev_err(&client->dev,
-				"Not found DT.\n");
-		return -ENODEV;
-	}
 
 	data->vcc_reg = devm_regulator_get(&client->dev, "vcc");
 	if (IS_ERR(data->vcc_reg)) {

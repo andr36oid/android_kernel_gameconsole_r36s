@@ -3,7 +3,7 @@
  *
  *	DECstation PROM interface.
  *
- *	Copyright (C) 2002  Maciej W. Rozycki
+ *	Copyright (C) 2002, 2026  Maciej W. Rozycki
  *
  *	This program is free software; you can redistribute it and/or
  *	modify it under the terms of the GNU General Public License
@@ -47,16 +47,11 @@
  */
 #define REX_PROM_MAGIC		0x30464354
 
-#ifdef CONFIG_64BIT
-
-#define prom_is_rex(magic)	1	/* KN04 and KN05 are REX PROMs.  */
-
-#else /* !CONFIG_64BIT */
-
-#define prom_is_rex(magic)	((magic) == REX_PROM_MAGIC)
-
-#endif /* !CONFIG_64BIT */
-
+/* KN04 and KN05 are REX PROMs, so only do the check for R3k systems.  */
+static inline bool prom_is_rex(u32 magic)
+{
+	return !IS_ENABLED(CONFIG_CPU_R3000) || magic == REX_PROM_MAGIC;
+}
 
 /*
  * 3MIN/MAXINE PROM entry points for DS5000/1xx's, DS5000/xx's and
@@ -79,7 +74,7 @@
  */
 typedef struct {
 	int pagesize;
-	unsigned char bitmap[0];
+	unsigned char bitmap[];
 } memmap;
 
 
@@ -105,6 +100,17 @@ extern int (*__pmax_close)(int);
 
 
 #ifdef CONFIG_64BIT
+
+#define O32_STK_SIZE 512
+extern unsigned long o32_stk[];
+
+/* Switch the stack if outside the 32-bit address space.  */
+static inline unsigned long *o32_get_stk(void)
+{
+	long fp = (long)__builtin_frame_address(0);
+
+	return fp != (int)fp ? o32_stk + O32_STK_SIZE : NULL;
+}
 
 /*
  * On MIPS64 we have to call PROM functions via a helper
@@ -137,7 +143,7 @@ int __DEC_PROM_O32(_prom_printf, (int (*)(char *, ...), void *, char *, ...));
 
 #define prom_getchar()		_prom_getchar(__prom_getchar, NULL)
 #define prom_getenv(x)		_prom_getenv(__prom_getenv, NULL, x)
-#define prom_printf(x...)	_prom_printf(__prom_printf, NULL, x)
+#define prom_printf(x...)	_prom_printf(__prom_printf, o32_get_stk(), x)
 
 #else /* !CONFIG_64BIT */
 

@@ -133,16 +133,21 @@ int kbase_context_common_init(struct kbase_context *kctx)
 	/* creating a context is considered a disjoint event */
 	kbase_disjoint_event(kctx->kbdev);
 
-	kctx->as_nr = KBASEP_AS_NR_INVALID;
-
-	atomic_set(&kctx->refcount, 0);
-
-	spin_lock_init(&kctx->mm_update_lock);
 	kctx->process_mm = NULL;
 	atomic_set(&kctx->nonmapped_pages, 0);
 	atomic_set(&kctx->permanent_mapped_pages, 0);
 	kctx->tgid = current->tgid;
 	kctx->pid = current->pid;
+
+	/* Check if this is a Userspace created context */
+	if (likely(kctx->filp)) {
+		/* This merely takes a reference on the mm_struct and not on the
+		 * address space and so won't block the freeing of address space
+		 * on process exit.
+		 */
+		mmgrab(current->mm);
+		kctx->process_mm = current->mm;
+	}
 
 	atomic_set(&kctx->used_pages, 0);
 
@@ -173,9 +178,12 @@ int kbase_context_common_init(struct kbase_context *kctx)
 	list_add(&kctx->kctx_list_link, &kctx->kbdev->kctx_list);
 
 	err = kbase_insert_kctx_to_process(kctx);
-	if (err)
+	if (err) {
 		dev_err(kctx->kbdev->dev,
 		"(err:%d) failed to insert kctx to kbase_process\n", err);
+		if (likely(kctx->filp))
+			mmdrop(kctx->process_mm);
+	}
 
 	KBASE_TLSTREAM_TL_KBASE_NEW_CTX(kctx->kbdev, kctx->id,
 		kctx->kbdev->gpu_props.props.raw_props.gpu_id);
@@ -220,14 +228,7 @@ static void kbase_remove_kctx_from_process(struct kbase_context *kctx)
 
 void kbase_context_common_term(struct kbase_context *kctx)
 {
-	unsigned long flags;
 	int pages;
-
-	mutex_lock(&kctx->kbdev->mmu_hw_mutex);
-	spin_lock_irqsave(&kctx->kbdev->hwaccess_lock, flags);
-	kbase_ctx_sched_remove_ctx(kctx);
-	spin_unlock_irqrestore(&kctx->kbdev->hwaccess_lock, flags);
-	mutex_unlock(&kctx->kbdev->mmu_hw_mutex);
 
 	pages = atomic_read(&kctx->used_pages);
 	if (pages != 0)
@@ -244,6 +245,9 @@ void kbase_context_common_term(struct kbase_context *kctx)
 	KBASE_TLSTREAM_TL_DEL_CTX(kctx->kbdev, kctx);
 	list_del(&kctx->kctx_list_link);
 	mutex_unlock(&kctx->kbdev->kctx_list_lock);
+
+	if (likely(kctx->filp))
+		mmdrop(kctx->process_mm);
 
 	KBASE_KTRACE_ADD(kctx->kbdev, CORE_CTX_DESTROY, kctx, 0u);
 

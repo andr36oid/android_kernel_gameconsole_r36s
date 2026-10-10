@@ -15,6 +15,7 @@
 #ifndef __MIPS_ASM_MIPS_CM_H__
 #define __MIPS_ASM_MIPS_CM_H__
 
+#include <linux/bitfield.h>
 #include <linux/bitops.h>
 #include <linux/errno.h>
 
@@ -49,6 +50,16 @@ extern phys_addr_t __mips_cm_phys_base(void);
  * It's set to 0 for 32-bit accesses and 1 for 64-bit accesses.
  */
 extern int mips_cm_is64;
+
+/*
+ * mips_cm_is_l2_hci_broken  - determine if HCI is broken
+ *
+ * Some CM reports show that Hardware Cache Initialization is
+ * complete, but in reality it's not the case. They also incorrectly
+ * indicate that Hardware Cache Initialization is supported. This
+ * flags allows warning about this broken feature.
+ */
+extern bool mips_cm_is_l2_hci_broken;
 
 /**
  * mips_cm_error_report - Report CM cache errors
@@ -87,6 +98,18 @@ static inline bool mips_cm_present(void)
 	return false;
 #endif
 }
+
+/**
+ * mips_cm_update_property - update property from the device tree
+ *
+ * Retrieve the properties from the device tree if a CM node exist and
+ * update the internal variable based on this.
+ */
+#ifdef CONFIG_MIPS_CM
+extern void mips_cm_update_property(void);
+#else
+static inline void mips_cm_update_property(void) {}
+#endif
 
 /**
  * mips_cm_has_l2sync - determine whether an L2-only sync region is present
@@ -157,8 +180,8 @@ GCR_ACCESSOR_RO(32, 0x030, rev)
 #define CM_GCR_REV_MINOR			GENMASK(7, 0)
 
 #define CM_ENCODE_REV(major, minor) \
-		(((major) << __ffs(CM_GCR_REV_MAJOR)) | \
-		 ((minor) << __ffs(CM_GCR_REV_MINOR)))
+		(FIELD_PREP(CM_GCR_REV_MAJOR, major) | \
+		 FIELD_PREP(CM_GCR_REV_MINOR, minor))
 
 #define CM_REV_CM2				CM_ENCODE_REV(6, 0)
 #define CM_REV_CM2_5				CM_ENCODE_REV(7, 0)
@@ -230,6 +253,10 @@ GCR_ACCESSOR_RO(32, 0x0d0, gic_status)
 /* GCR_CPC_STATUS - Indicates presence of a Cluster Power Controller (CPC) */
 GCR_ACCESSOR_RO(32, 0x0f0, cpc_status)
 #define CM_GCR_CPC_STATUS_EX			BIT(0)
+
+/* GCR_ACCESS - Controls core/IOCU access to GCRs */
+GCR_ACCESSOR_RW(32, 0x120, access_cm3)
+#define CM_GCR_ACCESS_ACCESSEN			GENMASK(7, 0)
 
 /* GCR_L2_CONFIG - Indicates L2 cache configuration when Config5.L2C=1 */
 GCR_ACCESSOR_RW(32, 0x130, l2_config)
@@ -366,10 +393,10 @@ static inline int mips_cm_revision(void)
 static inline unsigned int mips_cm_max_vp_width(void)
 {
 	extern int smp_num_siblings;
-	uint32_t cfg;
 
 	if (mips_cm_revision() >= CM_REV_CM3)
-		return read_gcr_sys_config2() & CM_GCR_SYS_CONFIG2_MAXVPW;
+		return FIELD_GET(CM_GCR_SYS_CONFIG2_MAXVPW,
+				 read_gcr_sys_config2());
 
 	if (mips_cm_present()) {
 		/*
@@ -377,8 +404,7 @@ static inline unsigned int mips_cm_max_vp_width(void)
 		 * number of VP(E)s, and if that ever changes then this will
 		 * need revisiting.
 		 */
-		cfg = read_gcr_cl_config() & CM_GCR_Cx_CONFIG_PVPE;
-		return (cfg >> __ffs(CM_GCR_Cx_CONFIG_PVPE)) + 1;
+		return FIELD_GET(CM_GCR_Cx_CONFIG_PVPE, read_gcr_cl_config()) + 1;
 	}
 
 	if (IS_ENABLED(CONFIG_SMP))

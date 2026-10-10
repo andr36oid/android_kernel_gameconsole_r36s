@@ -342,7 +342,7 @@ static int parse_probe_vars(char *arg, const struct fetch_type *t,
 			f->fn = t->fetch[FETCH_MTD_retval];
 		else
 			ret = -EINVAL;
-	} else if (strncmp(arg, "stack", 5) == 0) {
+	} else if (str_has_prefix(arg, "stack")) {
 		if (arg[5] == '\0') {
 			if (strcmp(t->name, DEFAULT_FETCH_TYPE_STR))
 				return -EINVAL;
@@ -361,7 +361,7 @@ static int parse_probe_vars(char *arg, const struct fetch_type *t,
 			}
 		} else
 			ret = -EINVAL;
-	} else if (strcmp(arg, "comm") == 0) {
+	} else if (strcmp(arg, "comm") == 0 || strcmp(arg, "COMM") == 0) {
 		if (strcmp(t->name, "string") != 0 &&
 		    strcmp(t->name, "string_size") != 0)
 			return -EINVAL;
@@ -480,8 +480,6 @@ static int parse_probe_arg(char *arg, const struct fetch_type *t,
 	return ret;
 }
 
-#define BYTES_TO_BITS(nb)	((BITS_PER_LONG * (nb)) / sizeof(long))
-
 /* Bitfield type needs to be parsed into a fetch function */
 static int __parse_bitfield_probe_arg(const char *bf,
 				      const struct fetch_type *t,
@@ -544,7 +542,7 @@ int traceprobe_parse_probe_arg(char *arg, ssize_t *size,
 	 * The default type of $comm should be "string", and it can't be
 	 * dereferenced.
 	 */
-	if (!t && strcmp(arg, "$comm") == 0)
+	if (!t && (strcmp(arg, "$comm") == 0 || strcmp(arg, "$COMM") == 0))
 		t = "string";
 	parg->type = find_fetch_type(t, ftbl);
 	if (!parg->type) {
