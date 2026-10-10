@@ -27,6 +27,9 @@
 #include <linux/slab.h>
 #include <linux/input.h>
 #include <linux/input-polldev.h>
+#include <linux/interrupt.h>
+#include <linux/irq.h>
+#include <linux/ktime.h>
 #include <linux/ioport.h>
 #include <linux/platform_device.h>
 #include <linux/gpio.h>
@@ -110,11 +113,18 @@ struct analog_mux {
 	int en_gpio;
 };
 
+struct joypad;
+
 struct bt_gpio {
 	/* GPIO Request label */
 	const char *label;
 	/* GPIO Number */
 	int num;
+	/* edge interrupt that starts a poll at once (0 = none) */
+	int irq;
+	struct joypad *joypad;
+	/* when the last change was reported (debounce) */
+	ktime_t changed;
 	/* report type */
 	int report_type;
 	/* report linux code */
@@ -135,6 +145,14 @@ struct stick_cal {
 struct joypad {
 	struct device *dev;
 	int poll_interval;
+	struct input_polled_dev *poll_dev;
+
+	/* button edges start a poll at once, see joypad_button_irq() */
+	bool button_irq;
+	/* after a reported button change, ignore further changes this long */
+	ktime_t button_debounce;
+	/* last poll started by an edge (at most one per ms, see the irq) */
+	ktime_t button_kick;
 
 	/* report enable/disable */
 	bool enable;
@@ -921,17 +939,25 @@ static void joypad_gpio_check(struct input_polled_dev *poll_dev)
 	for (nbtn = 0; nbtn < joypad->bt_gpio_count; nbtn++) {
 		struct bt_gpio *gpio = &joypad->gpios[nbtn];
 
-		if (gpio_get_value_cansleep(gpio->num) < 0) {
+		value = gpio_get_value_cansleep(gpio->num);
+		if (value < 0) {
 			dev_err(joypad->dev, "failed to get gpio state\n");
 			continue;
 		}
-		value = gpio_get_value(gpio->num);
 		if (value != gpio->old_value) {
+			ktime_t now = ktime_get();
+
+			/* contact bounce right after a change: keep the old state */
+			if (joypad->button_debounce &&
+			    ktime_before(now, ktime_add(gpio->changed,
+						       joypad->button_debounce)))
+				continue;
 			input_event(poll_dev->input,
 				gpio->report_type,
 				gpio->linux_code,
 				(value == gpio->active_level) ? 1 : 0);
 			gpio->old_value = value;
+			gpio->changed = now;
 		}
 	}
 	input_sync(poll_dev->input);
@@ -1027,13 +1053,87 @@ static void joypad_poll(struct input_polled_dev *poll_dev)
 	struct joypad *joypad = poll_dev->private;
 
 	if (joypad->enable) {
-		joypad_adc_check(poll_dev);
+		/* buttons first: the four stick conversions take a while */
 		joypad_gpio_check(poll_dev);
+		joypad_adc_check(poll_dev);
 	}
 	if (poll_dev->poll_interval != joypad->poll_interval) {
 		mutex_lock(&joypad->lock);
 		poll_dev->poll_interval = joypad->poll_interval;
 		mutex_unlock(&joypad->lock);
+	}
+}
+
+/*----------------------------------------------------------------------------*/
+/*
+ * A button changed: run the poll now instead of up to poll-interval later.
+ * The poll reads the level itself, so a glitch that is gone by then does
+ * nothing, and the debounce in joypad_gpio_check() eats contact bounce.
+ * The sticks stay on the timer (they are read in the same poll).
+ * At most one such poll per ms, so a chattering or floating pin can't eat
+ * a CPU; an edge skipped here is seen by the next timed poll as before.
+ */
+static irqreturn_t joypad_button_irq(int irq, void *data)
+{
+	struct bt_gpio *gpio = data;
+	struct joypad *joypad = gpio->joypad;
+	ktime_t now = ktime_get();
+
+	if (ktime_before(now, ktime_add_us(joypad->button_kick, 1000)))
+		return IRQ_HANDLED;
+	joypad->button_kick = now;
+	mod_delayed_work(system_freezable_wq, &joypad->poll_dev->work, 0);
+	return IRQ_HANDLED;
+}
+
+static void joypad_button_irq_setup(struct device *dev, struct joypad *joypad)
+{
+	int nbtn, irq, error, count = 0;
+
+	for (nbtn = 0; nbtn < joypad->bt_gpio_count; nbtn++) {
+		struct bt_gpio *gpio = &joypad->gpios[nbtn];
+
+		gpio->joypad = joypad;
+		irq = gpio_to_irq(gpio->num);
+		if (irq <= 0) {
+			dev_warn(dev, "no interrupt for gpio %d, polled only\n",
+				 gpio->num);
+			continue;
+		}
+		/* enabled in joypad_open() */
+		irq_set_status_flags(irq, IRQ_NOAUTOEN);
+		error = devm_request_irq(dev, irq, joypad_button_irq,
+					 IRQF_TRIGGER_RISING |
+					 IRQF_TRIGGER_FALLING,
+					 gpio->label ? gpio->label : DRV_NAME,
+					 gpio);
+		if (error) {
+			irq_clear_status_flags(irq, IRQ_NOAUTOEN);
+			dev_warn(dev, "gpio %d interrupt error %d, polled only\n",
+				 gpio->num, error);
+			continue;
+		}
+		gpio->irq = irq;
+		count++;
+	}
+	dev_info(dev, "%s : %d of %d buttons interrupt driven, debounce %lld us\n",
+		 __func__, count, joypad->bt_gpio_count,
+		 ktime_to_us(joypad->button_debounce));
+}
+
+static void joypad_button_irq_enable(struct joypad *joypad, bool on)
+{
+	int nbtn;
+
+	for (nbtn = 0; nbtn < joypad->bt_gpio_count; nbtn++) {
+		struct bt_gpio *gpio = &joypad->gpios[nbtn];
+
+		if (!gpio->irq)
+			continue;
+		if (on)
+			enable_irq(gpio->irq);
+		else
+			disable_irq(gpio->irq);
 	}
 }
 
@@ -1069,6 +1169,8 @@ static void joypad_open(struct input_polled_dev *poll_dev)
 	joypad->enable = true;
 	mutex_unlock(&joypad->lock);
 
+	joypad_button_irq_enable(joypad, true);
+
 	dev_info(joypad->dev, "%s : opened\n", __func__);
 }
 
@@ -1076,6 +1178,13 @@ static void joypad_open(struct input_polled_dev *poll_dev)
 static void joypad_close(struct input_polled_dev *poll_dev)
 {
 	struct joypad *joypad = poll_dev->private;
+
+	/*
+	 * The input core has stopped the poll already, but a button edge may
+	 * have queued it again since: stop the edges, then the poll.
+	 */
+	joypad_button_irq_enable(joypad, false);
+	cancel_delayed_work_sync(&poll_dev->work);
 
 	/* button report disable */
 	mutex_lock(&joypad->lock);
@@ -1447,6 +1556,10 @@ static int joypad_input_setup(struct device *dev, struct joypad *joypad)
 		__set_bit(EV_REP, input->evbit);
 
 	joypad->dev = dev;
+	joypad->poll_dev = poll_dev;
+
+	if (joypad->button_irq)
+		joypad_button_irq_setup(dev, joypad);
 
 	error = input_register_polled_device(poll_dev);
 	if (error) {
@@ -1508,6 +1621,16 @@ static int joypad_dt_parse(struct device *dev, struct joypad *joypad)
 
 	device_property_read_u32(dev, "poll-interval",
 				&joypad->poll_interval);
+
+	/* optional: button edges start a poll at once (sticks stay polled) */
+	joypad->button_irq = device_property_present(dev, "button-irq");
+	if (joypad->button_irq) {
+		u32 debounce_ms = 5;
+
+		device_property_read_u32(dev, "button-debounce-ms",
+					 &debounce_ms);
+		joypad->button_debounce = ms_to_ktime(debounce_ms);
+	}
 
 	joypad->auto_repeat = device_property_present(dev, "autorepeat");
 
