@@ -38,6 +38,7 @@
 #include <linux/of_gpio.h>
 #include <linux/delay.h>
 #include <linux/pwm.h>
+#include <linux/math64.h>
 
 /*----------------------------------------------------------------------------*/
 #define DRV_NAME "odroidgo3_joypad"
@@ -47,6 +48,20 @@
 #define	ADC_DATA_TUNING(x, p)	((x * p) / 100)
 #define	ADC_TUNING_DEFAULT	180
 #define	CLAMP(x, low, high)  (((x) > (high)) ? (high) : (((x) < (low)) ? (low) : (x)))
+
+/*----------------------------------------------------------------------------*/
+/*
+ * Stick calibration (written from userspace, see the stick_* attributes).
+ * Axes are counted by the event they report, not by amux channel:
+ * 0 = ABS_X, 1 = ABS_Y (left stick), 2 = ABS_RX, 3 = ABS_RY (right stick).
+ * Values are raw readings (mV * button-adc-scale), before any inversion.
+ */
+#define	STICK_AXES		4
+/* smallest travel from center to either end that is taken as real */
+#define	STICK_MIN_SPAN		100
+/* radial dead zone used once calibrated, percent of full travel */
+#define	STICK_DEADZONE_DEFAULT	8
+#define	STICK_DEADZONE_MAX	50
 
 /*----------------------------------------------------------------------------*/
 /*
@@ -110,6 +125,13 @@ struct bt_gpio {
 	bool active_level;
 };
 
+struct stick_cal {
+	bool valid;
+	int min[STICK_AXES], center[STICK_AXES], max[STICK_AXES];
+	/* radial dead zone, percent of full travel */
+	int deadzone;
+};
+
 struct joypad {
 	struct device *dev;
 	int poll_interval;
@@ -156,7 +178,68 @@ struct joypad {
 	u16 level;
 	u16 boost_weak;
 	u16 boost_strong;
+
+	/* stick calibration, protected by lock */
+	struct stick_cal cal;
+	/* last raw reading and calibrated value per axis (see stick_axis) */
+	int stick_raw[STICK_AXES];
+	int stick_norm[STICK_AXES];
 };
+
+/*----------------------------------------------------------------------------*/
+static int stick_axis(int report_type)
+{
+	switch (report_type) {
+	case ABS_X:	return 0;
+	case ABS_Y:	return 1;
+	case ABS_RX:	return 2;
+	case ABS_RY:	return 3;
+	default:	return -1;
+	}
+}
+
+/* Raw reading -> -range..range, center at 0, the stored ends at +-range. */
+static int stick_normalize(const struct stick_cal *cal, int axis, int raw,
+			   int range)
+{
+	int center = cal->center[axis];
+	s64 v;
+
+	if (raw >= center)
+		v = div_s64((s64)(raw - center) * range,
+			    cal->max[axis] - center);
+	else
+		v = div_s64((s64)(raw - center) * range,
+			    center - cal->min[axis]);
+
+	return (int)clamp_t(s64, v, -range, range);
+}
+
+/*
+ * Radial dead zone for one stick. Inside it both axes read 0; outside it the
+ * travel is stretched again, so the output starts at 0 instead of jumping to
+ * the dead zone edge and still reaches +-range.
+ */
+static void stick_apply_deadzone(int *x, int *y, int deadzone, int range)
+{
+	unsigned long m = int_sqrt((unsigned long)((s64)*x * *x + (s64)*y * *y));
+	int dz = range * deadzone / 100;
+	s64 div;
+
+	if (m <= (unsigned long)dz) {
+		*x = 0;
+		*y = 0;
+		return;
+	}
+	if (!dz)
+		return;
+
+	div = (s64)m * (range - dz);
+	*x = (int)clamp_t(s64, div64_s64((s64)*x * (s64)(m - dz) * range, div),
+			  -range, range);
+	*y = (int)clamp_t(s64, div64_s64((s64)*y * (s64)(m - dz) * range, div),
+			  -range, range);
+}
 
 static int pwm_vibrator_start(struct joypad *joypad)
 {
@@ -657,6 +740,157 @@ static DEVICE_ATTR(rumble_boost_weak, S_IWUSR | S_IRUGO,
 		   joypad_show_boost_weak,
 		   joypad_store_boost_weak);
 
+/*----------------------------------------------------------------------------*/
+/*
+ * ATTRIBUTES:
+ *
+ * /sys/devices/platform/odroidgo3-joypad/stick_raw [r]
+ *   last raw reading of each axis: "x y rx ry" (mV * adc scale, not inverted,
+ *   not calibrated). For calibration tools.
+ *
+ * /sys/devices/platform/odroidgo3-joypad/stick_cal [rw]
+ *   "off", or 12 numbers: min center max for x, y, rx and ry, in stick_raw
+ *   units. While set, the sticks are scaled from these instead of the
+ *   automatic center taken at open and the DT tuning/deadzone values.
+ *
+ * /sys/devices/platform/odroidgo3-joypad/stick_deadzone [rw]
+ *   radial dead zone in percent (0-50) used while stick_cal is set.
+ */
+/*----------------------------------------------------------------------------*/
+static int stick_raw_limit(struct joypad *joypad)
+{
+	return ADC_MAX_VOLTAGE * (joypad->bt_adc_scale ? joypad->bt_adc_scale : 1);
+}
+
+static ssize_t joypad_show_stick_raw(struct device *dev,
+				     struct device_attribute *attr,
+				     char *buf)
+{
+	struct platform_device *pdev  = to_platform_device(dev);
+	struct joypad *joypad = platform_get_drvdata(pdev);
+
+	return sprintf(buf, "%d %d %d %d\n",
+		       READ_ONCE(joypad->stick_raw[0]),
+		       READ_ONCE(joypad->stick_raw[1]),
+		       READ_ONCE(joypad->stick_raw[2]),
+		       READ_ONCE(joypad->stick_raw[3]));
+}
+
+static DEVICE_ATTR(stick_raw, S_IRUGO, joypad_show_stick_raw, NULL);
+
+/*----------------------------------------------------------------------------*/
+static ssize_t joypad_store_stick_cal(struct device *dev,
+				      struct device_attribute *attr,
+				      const char *buf,
+				      size_t count)
+{
+	struct platform_device *pdev  = to_platform_device(dev);
+	struct joypad *joypad = platform_get_drvdata(pdev);
+	int v[STICK_AXES * 3];
+	int limit = stick_raw_limit(joypad);
+	int axis;
+
+	if (sysfs_streq(buf, "off") || sysfs_streq(buf, "0")) {
+		mutex_lock(&joypad->lock);
+		joypad->cal.valid = false;
+		mutex_unlock(&joypad->lock);
+		dev_info(dev, "stick calibration off\n");
+		return count;
+	}
+
+	if (sscanf(buf, "%d %d %d %d %d %d %d %d %d %d %d %d",
+		   &v[0], &v[1], &v[2], &v[3], &v[4], &v[5],
+		   &v[6], &v[7], &v[8], &v[9], &v[10], &v[11]) != 12)
+		return -EINVAL;
+
+	for (axis = 0; axis < STICK_AXES; axis++) {
+		int min = v[axis * 3], center = v[axis * 3 + 1];
+		int max = v[axis * 3 + 2];
+
+		if (min < 0 || max > limit ||
+		    center - min < STICK_MIN_SPAN ||
+		    max - center < STICK_MIN_SPAN) {
+			dev_warn(dev, "stick calibration axis %d rejected: %d %d %d\n",
+				 axis, min, center, max);
+			return -EINVAL;
+		}
+	}
+
+	mutex_lock(&joypad->lock);
+	for (axis = 0; axis < STICK_AXES; axis++) {
+		joypad->cal.min[axis] = v[axis * 3];
+		joypad->cal.center[axis] = v[axis * 3 + 1];
+		joypad->cal.max[axis] = v[axis * 3 + 2];
+		joypad->stick_norm[axis] = 0;
+	}
+	joypad->cal.valid = true;
+	mutex_unlock(&joypad->lock);
+	dev_info(dev, "stick calibration on\n");
+
+	return count;
+}
+
+static ssize_t joypad_show_stick_cal(struct device *dev,
+				     struct device_attribute *attr,
+				     char *buf)
+{
+	struct platform_device *pdev  = to_platform_device(dev);
+	struct joypad *joypad = platform_get_drvdata(pdev);
+	struct stick_cal *cal = &joypad->cal;
+	ssize_t pos = 0;
+	int axis;
+
+	mutex_lock(&joypad->lock);
+	if (!cal->valid) {
+		pos = sprintf(buf, "off\n");
+	} else {
+		for (axis = 0; axis < STICK_AXES; axis++)
+			pos += sprintf(&buf[pos], "%s%d %d %d",
+				       axis ? " " : "", cal->min[axis],
+				       cal->center[axis], cal->max[axis]);
+		pos += sprintf(&buf[pos], "\n");
+	}
+	mutex_unlock(&joypad->lock);
+	return pos;
+}
+
+static DEVICE_ATTR(stick_cal, S_IWUSR | S_IRUGO,
+		   joypad_show_stick_cal,
+		   joypad_store_stick_cal);
+
+/*----------------------------------------------------------------------------*/
+static ssize_t joypad_store_stick_deadzone(struct device *dev,
+					   struct device_attribute *attr,
+					   const char *buf,
+					   size_t count)
+{
+	struct platform_device *pdev  = to_platform_device(dev);
+	struct joypad *joypad = platform_get_drvdata(pdev);
+	unsigned int deadzone;
+
+	if (kstrtouint(buf, 10, &deadzone) || deadzone > STICK_DEADZONE_MAX)
+		return -EINVAL;
+
+	mutex_lock(&joypad->lock);
+	joypad->cal.deadzone = deadzone;
+	mutex_unlock(&joypad->lock);
+	return count;
+}
+
+static ssize_t joypad_show_stick_deadzone(struct device *dev,
+					  struct device_attribute *attr,
+					  char *buf)
+{
+	struct platform_device *pdev  = to_platform_device(dev);
+	struct joypad *joypad = platform_get_drvdata(pdev);
+
+	return sprintf(buf, "%d\n", READ_ONCE(joypad->cal.deadzone));
+}
+
+static DEVICE_ATTR(stick_deadzone, S_IWUSR | S_IRUGO,
+		   joypad_show_stick_deadzone,
+		   joypad_store_stick_deadzone);
+
 static struct attribute *joypad_attrs[] = {
 	&dev_attr_poll_interval.attr,
 	&dev_attr_adc_fuzz.attr,
@@ -667,6 +901,9 @@ static struct attribute *joypad_attrs[] = {
 	&dev_attr_rumble_period.attr,
 	&dev_attr_rumble_boost_strong.attr,
 	&dev_attr_rumble_boost_weak.attr,
+	&dev_attr_stick_raw.attr,
+	&dev_attr_stick_cal.attr,
+	&dev_attr_stick_deadzone.attr,
 	NULL,
 };
 
@@ -701,10 +938,42 @@ static void joypad_gpio_check(struct input_polled_dev *poll_dev)
 }
 
 /*----------------------------------------------------------------------------*/
+static void joypad_stick_report(struct joypad *joypad,
+				struct input_dev *input,
+				const struct stick_cal *cal)
+{
+	int *norm = joypad->stick_norm;
+	int out[STICK_AXES];
+	int nbtn, range = 0;
+
+	for (nbtn = 0; nbtn < joypad->amux_count; nbtn++)
+		range = max(range, joypad->adcs[nbtn].max);
+
+	memcpy(out, norm, sizeof(out));
+	stick_apply_deadzone(&out[0], &out[1], cal->deadzone, range);
+	stick_apply_deadzone(&out[2], &out[3], cal->deadzone, range);
+
+	for (nbtn = 0; nbtn < joypad->amux_count; nbtn++) {
+		struct bt_adc *adc = &joypad->adcs[nbtn];
+		int axis = stick_axis(adc->report_type);
+
+		if (axis < 0)
+			continue;
+		adc->value = CLAMP(out[axis], adc->min, adc->max);
+		input_report_abs(input, adc->report_type,
+			adc->invert ? adc->value * (-1) : adc->value);
+	}
+}
+
 static void joypad_adc_check(struct input_polled_dev *poll_dev)
 {
 	struct joypad *joypad = poll_dev->private;
-	int nbtn;
+	struct stick_cal cal;
+	int nbtn, axis;
+
+	mutex_lock(&joypad->lock);
+	cal = joypad->cal;
+	mutex_unlock(&joypad->lock);
 
 	for (nbtn = 0; nbtn < joypad->amux_count; nbtn++) {
 		struct bt_adc *adc = &joypad->adcs[nbtn];
@@ -714,6 +983,17 @@ static void joypad_adc_check(struct input_polled_dev *poll_dev)
 			dev_err_ratelimited(joypad->dev, "%s : saradc channels[%d]!\n",
 				__func__, nbtn);
 			continue;
+		}
+
+		axis = stick_axis(adc->report_type);
+		if (axis >= 0) {
+			WRITE_ONCE(joypad->stick_raw[axis], adc->value);
+			/* calibrated: reported for both sticks below */
+			if (cal.valid) {
+				joypad->stick_norm[axis] = stick_normalize(&cal,
+					axis, adc->value, adc->max);
+				continue;
+			}
 		}
 		adc->value = adc->value - adc->cal;
 
@@ -736,6 +1016,8 @@ static void joypad_adc_check(struct input_polled_dev *poll_dev)
 			adc->report_type,
 			adc->invert ? adc->value * (-1) : adc->value);
 	}
+	if (cal.valid)
+		joypad_stick_report(joypad, poll_dev->input, &cal);
 	input_sync(poll_dev->input);
 }
 
@@ -1309,6 +1591,7 @@ static int joypad_probe(struct platform_device *pdev)
 	}
 
 	mutex_init(&joypad->lock);
+	joypad->cal.deadzone = STICK_DEADZONE_DEFAULT;
 	platform_set_drvdata(pdev, joypad);
 
 	error = sysfs_create_group(&pdev->dev.kobj, &joypad_attr_group);
