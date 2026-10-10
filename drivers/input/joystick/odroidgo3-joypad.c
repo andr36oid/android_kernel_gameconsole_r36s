@@ -192,6 +192,8 @@ struct joypad {
 	/* pwm device for rumble*/
 	struct input_dev *input;
 	struct pwm_device *pwm;
+	/* motor on a plain GPIO (on/off) instead of the PWM, from DT */
+	struct gpio_desc *rumble_gpio;
 	struct work_struct play_work;
 	u16 level;
 	u16 boost_weak;
@@ -265,6 +267,11 @@ static int pwm_vibrator_start(struct joypad *joypad)
 	struct pwm_state state;
 	int err;
 
+	if (joypad->rumble_gpio) {
+		gpiod_set_value_cansleep(joypad->rumble_gpio, 1);
+		return 0;
+	}
+
 	pwm_get_state(joypad->pwm, &state);
 	pwm_set_relative_duty_cycle(&state, joypad->level, 0xffff);
 	state.enabled = true;
@@ -280,6 +287,10 @@ static int pwm_vibrator_start(struct joypad *joypad)
 
 static void pwm_vibrator_stop(struct joypad *joypad)
 {
+	if (joypad->rumble_gpio) {
+		gpiod_set_value_cansleep(joypad->rumble_gpio, 0);
+		return;
+	}
 	pwm_disable(joypad->pwm);
 }
 
@@ -1445,7 +1456,7 @@ static int rumble_play_effect(struct input_dev *dev, void *data, struct ff_effec
 
 	joypad->level = (u16)CLAMP(boosted_level, 0, 0xffff);
 	
-	dev_info(joypad->dev,"joypad->level = %d",  joypad->level);
+	dev_dbg(joypad->dev, "joypad->level = %d", joypad->level);
 	schedule_work(&joypad->play_work);
 	return 0;
 }
@@ -1455,14 +1466,31 @@ static int joypad_rumble_setup(struct device *dev, struct joypad *joypad)
 	int err;
 	struct pwm_state state;
 
+	INIT_WORK(&joypad->play_work, pwm_vibrator_play_work);
+
+	/*
+	 * Clones with a motor on a plain GPIO (XF35H, XF40H, R36 Ultra) set
+	 * rumble-gpios; the motor starts off. Boards without it keep the PWM.
+	 */
+	joypad->rumble_gpio = devm_gpiod_get_optional(dev, "rumble",
+						      GPIOD_OUT_LOW);
+	if (IS_ERR(joypad->rumble_gpio)) {
+		err = PTR_ERR(joypad->rumble_gpio);
+		joypad->rumble_gpio = NULL;
+		if (err == -EPROBE_DEFER)
+			return err;
+		dev_err(dev, "rumble gpio error %d, trying the PWM\n", err);
+	} else if (joypad->rumble_gpio) {
+		dev_info(dev, "rumble motor on a GPIO\n");
+		return 0;
+	}
+
 	joypad->pwm = devm_pwm_get(dev, "enable");
 	if (IS_ERR(joypad->pwm))
 	{
 		dev_err(dev, "rumble get error\n");
 		return -EINVAL;
 	}
-
-	INIT_WORK(&joypad->play_work, pwm_vibrator_play_work);
 
 	/* Sync up PWM state and ensure it is off. */
 	pwm_init_state(joypad->pwm, &state);
@@ -1717,7 +1745,8 @@ static int joypad_probe(struct platform_device *pdev)
 	joypad->cal.deadzone = STICK_DEADZONE_DEFAULT;
 	platform_set_drvdata(pdev, joypad);
 
-	error = sysfs_create_group(&pdev->dev.kobj, &joypad_attr_group);
+	/* devm, so a deferred probe can add the group again on the retry */
+	error = devm_device_add_group(dev, &joypad_attr_group);
 	if (error) {
 		dev_err(dev, "create sysfs group fail, error: %d\n",
 			error);
