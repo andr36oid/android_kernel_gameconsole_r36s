@@ -253,7 +253,8 @@
 	battery {
 		label = "battery_charging";
 		gpios = <&gpio0 RK_PB5 GPIO_ACTIVE_HIGH>;
-		default-state = "on";
+		/* was default-state = "on": lit all the time instead of while charging */
+		linux,default-trigger = "battery-charging";
 	};
 };
 
