@@ -2057,7 +2057,6 @@ static enum power_supply_property rk817_bat_props[] = {
 	POWER_SUPPLY_PROP_CHARGE_FULL,
 	POWER_SUPPLY_PROP_TECHNOLOGY,
 	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
-	POWER_SUPPLY_PROP_TIME_TO_FULL_NOW,
 };
 
 static int rk817_bat_get_usb_psy(struct device *dev, void *data)
@@ -2171,23 +2170,26 @@ static int rk817_get_capacity_leve(struct rk817_battery_device *battery)
 		return POWER_SUPPLY_CAPACITY_LEVEL_FULL;
 }
 
-static int rk817_battery_time_to_full(struct rk817_battery_device *battery)
+/*
+ * Charge left in the battery in uAh, as Android reads charge_counter.
+ * remain_cap is the coulomb counter in uAh, fcc the full charge in mAh.
+ * update_info already pulls the counter back when it runs past fcc; the
+ * clamp only covers the few seconds until then. remain_cap is a u32: a
+ * counter that runs below zero near empty wraps to a huge value, which
+ * reads as negative here and is reported as 0, not as a full battery.
+ */
+static int rk817_bat_charge_counter(struct rk817_battery_device *battery)
 {
-	int time_sec;
-	int cap_temp;
+	int full = battery->fcc > 0 ? battery->fcc * 1000 : 0;
+	int cap = (int)battery->remain_cap;
 
-	if (battery->pdata->bat_mode == MODE_VIRTUAL) {
-		time_sec = 3600;
-	} else if (battery->voltage_avg > 0) {
-		cap_temp = battery->design_cap - (battery->remain_cap / 1000);
-		if (cap_temp < 0)
-			cap_temp = 0;
-		time_sec = (3600 * cap_temp) / battery->voltage_avg;
-	} else {
-		time_sec = 3600 * 24; /* One day */
-	}
-
-	return time_sec;
+	if (battery->pdata->bat_mode == MODE_VIRTUAL)
+		return battery->design_cap * 1000 / 100 * VIRTUAL_SOC;
+	if (cap < 0)
+		return 0;
+	if (full && cap > full)
+		return full;
+	return cap;
 }
 
 static int rk817_battery_get_property(struct power_supply *psy,
@@ -2240,16 +2242,13 @@ static int rk817_battery_get_property(struct power_supply *psy,
 		}
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
-		val->intval = battery->charge_count;
+		val->intval = rk817_bat_charge_counter(battery);
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_FULL:
 		val->intval = battery->fcc * 1000;/* uAh */
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
 		val->intval = battery->design_cap * 1000;/* uAh */
-		break;
-	case POWER_SUPPLY_PROP_TIME_TO_FULL_NOW:
-		val->intval = rk817_battery_time_to_full(battery);
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
 		val->intval = 4500 * 1000;
