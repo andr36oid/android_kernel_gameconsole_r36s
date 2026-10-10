@@ -711,7 +711,7 @@ static void joypad_adc_check(struct input_polled_dev *poll_dev)
 
 		adc->value = joypad_adc_read(joypad->amux, adc);
 		if (!adc->value) {
-			dev_err(joypad->dev, "%s : saradc channels[%d]!\n",
+			dev_err_ratelimited(joypad->dev, "%s : saradc channels[%d]!\n",
 				__func__, nbtn);
 			continue;
 		}

@@ -774,6 +774,10 @@ try_again:
 	if (err)
 		return err;
 
+	if (!host->card && rocr)
+		pr_info("%s: new card: ACMD41 asked %#x, card says %#x\n",
+			mmc_hostname(host), ocr, *rocr);
+
 	/*
 	 * In case CCS and S18A in the response is set, start Signal Voltage
 	 * Switch procedure. SPI mode doesn't support CMD11.
