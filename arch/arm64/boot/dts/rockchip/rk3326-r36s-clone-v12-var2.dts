@@ -30,3 +30,20 @@
 &vcc_lcd_sw {
 	status = "disabled";
 };
+
+&rk817 {
+	battery {
+		/*
+		 * Battery values of the R36S-V12 Variant 2 Panel 1 firmware
+		 * (kernel DTB in southoz's dArkOSRE-R36 port).
+		 */
+		ocv_table = <3350 3386 3422 3455 3488 3528 3575
+			3620 3654 3684 3714 3737 3762 3802
+			3841 3861 3870 3894 3929 3962 4033>;
+		design_capacity = <2539>;
+		design_qmax = <2793>;
+		bat_res = <102>;
+		power_off_thresd = <3350>;
+		zero_algorithm_vol = <3850>;
+	};
+};

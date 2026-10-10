@@ -72,9 +72,18 @@
 
 &rk817 {
 	battery {
+		/*
+		 * Stock values, from the stock DTB dumped from the XF35H (the
+		 * XF40H has the same).
+		 */
+		ocv_table = <3400 3434 3483 3522 3553 3575 3592
+			3606 3622 3642 3674 3720 3764 3809
+			3849 3883 3919 3975 4018 4071 4181>;
 		design_capacity = <3228>;
 		design_qmax = <3550>;
 		bat_res = <115>;
+		power_off_thresd = <3500>;
+		zero_algorithm_vol = <3850>;
 	};
 };
 

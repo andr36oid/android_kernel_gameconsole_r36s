@@ -63,8 +63,17 @@
 
 &rk817 {
 	battery {
+		/*
+		 * Stock values of the V04 2548 Panel 2 batch (its U-Boot DTB;
+		 * K4uanGP's V04 kernel DTBs and southoz's dArkOSRE port agree).
+		 */
+		ocv_table = <3400 3444 3493 3529 3559 3582 3599
+			3615 3634 3660 3701 3759 3809 3852
+			3886 3911 3961 4012 4028 4075 4182>;
 		design_capacity = <3188>;
 		design_qmax = <3506>;
 		bat_res = <113>;
+		power_off_thresd = <3500>;
+		zero_algorithm_vol = <3700>;
 	};
 };
