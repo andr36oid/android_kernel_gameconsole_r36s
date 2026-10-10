@@ -84,6 +84,15 @@ config ROCKCHIP_RAMDISK
 	  Saying Y here will allow you to use reserved RAM memory as a block
 	  device.
 
+config ANDR36OID_SLEEP_WDT
+	bool "Hardware watchdog during suspend and resume"
+	depends on PM_SLEEP && COMMON_CLK && RESET_CONTROLLER
+	help
+	  Arms the SoC watchdog (snps,dw-wdt) while devices suspend and
+	  resume, so a driver that hangs the bus there resets the console
+	  instead of freezing it. Stopped while the console is asleep. Do
+	  not combine with DW_WATCHDOG.
+
 config ROCKCHIP_SUSPEND_MODE
 	tristate "Rockchip suspend mode config"
 	depends on ROCKCHIP_SIP
