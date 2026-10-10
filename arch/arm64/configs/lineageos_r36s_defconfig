@@ -379,6 +379,9 @@ CONFIG_ARM64_MODULE_PLTS=y
 CONFIG_CMDLINE=""
 # CONFIG_EFI is not set
 CONFIG_COMPAT=y
+# 4.19.325 needs GCC 5.1 for the 32-bit vDSO and the Android build gives it GCC 4.9:
+# 32-bit apps read the clock with a system call instead
+# CONFIG_COMPAT_VDSO is not set
 CONFIG_KUSER_HELPERS=y
 
 #
