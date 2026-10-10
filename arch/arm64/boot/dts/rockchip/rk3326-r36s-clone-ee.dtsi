@@ -252,6 +252,12 @@
 	cd-gpios = <&gpio0 RK_PA2 GPIO_ACTIVE_LOW>;
 	vmmc-supply = <&vcc_lcd>;
 	vqmmc-supply = <&vcc_backlight>;
+	/* LDO7 can switch to 1.8 V here, so UHS works */
+	/delete-property/ no-1-8-v;
+	sd-uhs-sdr12;
+	sd-uhs-sdr25;
+	sd-uhs-sdr50;
+	sd-uhs-sdr104;
 };
 
 &dsi {

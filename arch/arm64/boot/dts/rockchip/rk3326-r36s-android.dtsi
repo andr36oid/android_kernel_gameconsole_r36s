@@ -1190,10 +1190,13 @@
 	card-detect-delay = <800>;
 	ignore-pm-notify;
 	cd-gpios = <&gpio3 RK_PB6 GPIO_ACTIVE_LOW>; /*[> CD GPIO <]*/
-	sd-uhs-sdr12;
-	sd-uhs-sdr25;
-	sd-uhs-sdr50;
-	sd-uhs-sdr104;
+	/*
+	 * The second slot's I/O rail (vccio_sd) is fixed at 1.8 V and its card
+	 * power (vcc_sd) can't be cycled because slot 1 shares it, so the UHS
+	 * switch to 1.8 V signalling leaves cards stuck. Stay at high speed,
+	 * like the stock R36S V12 firmware does.
+	 */
+	no-1-8-v;
 	vqmmc-supply = <&vccio_sd>;
 	vmmc-supply = <&vcc_sd>;
 	status = "okay";
