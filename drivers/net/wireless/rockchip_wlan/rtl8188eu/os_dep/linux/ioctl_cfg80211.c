@@ -4179,7 +4179,16 @@ static int cfg80211_rtw_set_power_mgmt(struct wiphy *wiphy,
 	rtw_wdev_priv->power_mgmt = enabled;
 
 #ifdef CONFIG_LPS
-	if (!enabled)
+	/*
+	 * A one-time LPS leave is undone by the traffic watchdog 2 s later.
+	 * Keep the choice instead: off stays off until power save is turned
+	 * on again, on goes back to the rtw_power_mgnt default.
+	 */
+	if (is_primary_adapter(padapter) &&
+	    padapter->registrypriv.power_mgnt != PS_MODE_ACTIVE)
+		rtw_pm_set_lps(padapter, enabled ?
+			       padapter->registrypriv.power_mgnt : PS_MODE_ACTIVE);
+	else if (!enabled)
 		rtw_lps_ctrl_wk_cmd(padapter, LPS_CTRL_LEAVE_CFG80211_PWRMGMT, 0);
 #endif
 

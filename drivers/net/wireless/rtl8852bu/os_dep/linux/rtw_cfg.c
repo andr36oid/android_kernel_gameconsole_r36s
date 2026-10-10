@@ -65,7 +65,7 @@ int rtw_lps_mode = PS_LPS_MAX;
 module_param(rtw_lps_mode, int, 0644);
 MODULE_PARM_DESC(rtw_lps_mode, "The default LPS mode");
 
-int rtw_lps_listen_bcn_mode = RTW_LPS_LISTEN_BCN_MAX;
+int rtw_lps_listen_bcn_mode = RTW_LPS_RLBM_MIN; /* wake every beacon: less delay than MAX */
 module_param(rtw_lps_listen_bcn_mode, int, 0644);
 MODULE_PARM_DESC(rtw_lps_listen_bcn_mode, "The default lps dtim mode");
 

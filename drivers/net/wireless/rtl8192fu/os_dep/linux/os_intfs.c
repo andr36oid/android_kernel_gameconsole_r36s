@@ -49,7 +49,7 @@ int rtw_scan_mode = 1;/* active, passive */
 	/* LPS configuration */
 /* RTW_LPS_MODE=0:disable, 1:LPS , 2:LPS with clock gating, 3: power gating */
 #if (RTW_LPS_MODE > 0)
-	int rtw_power_mgnt = PS_MODE_MAX;
+	int rtw_power_mgnt = PS_MODE_MIN; /* wake every beacon: less delay than MAX */
 
 	#ifdef CONFIG_USB_HCI
 		int rtw_lps_level = LPS_NORMAL; /*USB default LPS level*/
