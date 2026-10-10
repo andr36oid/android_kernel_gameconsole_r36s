@@ -1331,11 +1331,15 @@ int extcon_dev_register(struct extcon_dev *edev)
 		}
 	}
 
-	edev->bnh = devm_kzalloc(&edev->dev,
-			sizeof(*edev->bnh) * edev->max_supported, GFP_KERNEL);
+	/*
+	 * Rockchip's blocking notifier heads. Not devm: like nh above, this runs before
+	 * device_register() since 4.19.y moved it down, and devres on a device that isn't
+	 * set up yet writes through a NULL list (crash in rockchip_usb2phy_probe at boot).
+	 */
+	edev->bnh = kcalloc(edev->max_supported, sizeof(*edev->bnh), GFP_KERNEL);
 	if (!edev->bnh) {
 		ret = -ENOMEM;
-		goto err_dev;
+		goto err_alloc_bnh;
 	}
 
 	for (index = 0; index < edev->max_supported; index++)
@@ -1371,6 +1375,8 @@ int extcon_dev_register(struct extcon_dev *edev)
 	return 0;
 
 err_dev:
+	kfree(edev->bnh);
+err_alloc_bnh:
 	if (edev->max_supported)
 		kfree(edev->nh);
 err_alloc_nh:
@@ -1441,6 +1447,7 @@ void extcon_dev_unregister(struct extcon_dev *edev)
 		kfree(edev->cables);
 		kfree(edev->nh);
 	}
+	kfree(edev->bnh);
 
 	put_device(&edev->dev);
 }
