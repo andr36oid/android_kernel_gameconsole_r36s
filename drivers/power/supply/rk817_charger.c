@@ -335,6 +335,8 @@ struct rk817_charger {
 	int plugout_irq;
 	/* held while a charger is in: no deep sleep on the charger */
 	struct wakeup_source *charging_ws;
+	/* charge_current_ma in sysfs: 0 = the DT's max_chrg_current */
+	u32 user_chrg_current;
 };
 
 static enum power_supply_property rk817_ac_props[] = {
@@ -800,6 +802,9 @@ static void rk817_charge_set_otg_in(struct rk817_charger *charge, int online)
 static void rk817_charge_set_chrg_param(struct rk817_charger *charge,
 					enum charger_t charger)
 {
+	/* again on every plug-in, like the input voltage limit */
+	rk817_charge_set_chrg_current(charge, charge->max_chrg_current);
+
 	switch (charger) {
 	case USB_TYPE_NONE_CHARGER:
 		charge->usb_in = 0;
@@ -1314,6 +1319,77 @@ static int rk817_charge_usb_init(struct rk817_charger *charge)
 	return 0;
 }
 
+/*
+ * andr36oid: the charging speed chosen in Settings (charge_current_ma, 0 = the DT's
+ * default). Above the default the charger input may draw more too, up to the PMIC's 3 A;
+ * at or below it the DT's input limit stays.
+ */
+static void rk817_charge_apply_speed(struct rk817_charger *charge)
+{
+	u32 def = charge->pdata->max_chrg_current;
+	u32 chrg = charge->user_chrg_current ? charge->user_chrg_current : def;
+
+	charge->max_chrg_current = chrg;
+	charge->max_input_current = chrg > def ?
+		max_t(u32, charge->pdata->max_input_current, min_t(u32, chrg, 3000)) :
+		charge->pdata->max_input_current;
+	rk817_charge_set_chrg_current(charge, chrg);
+}
+
+static ssize_t charge_current_ma_show(struct device *dev,
+				      struct device_attribute *attr, char *buf)
+{
+	struct rk817_charger *charge = dev_get_drvdata(dev);
+
+	return sprintf(buf, "%u\n", charge->user_chrg_current);
+}
+
+static ssize_t charge_current_ma_store(struct device *dev,
+				       struct device_attribute *attr,
+				       const char *buf, size_t count)
+{
+	struct rk817_charger *charge = dev_get_drvdata(dev);
+	u32 ma;
+
+	if (kstrtou32(buf, 10, &ma))
+		return -EINVAL;
+	if (ma && (ma < 500 || ma > 3500))
+		return -EINVAL;
+
+	charge->user_chrg_current = ma;
+	rk817_charge_apply_speed(charge);
+	/* a charger that is in gets the new input limit now */
+	if (charge->dc_charger != DC_TYPE_NONE_CHARGER)
+		rk817_charge_set_chrg_param(charge, DC_TYPE_DC_CHARGER);
+	else if (charge->usb_charger != USB_TYPE_NONE_CHARGER &&
+		 charge->usb_charger != USB_TYPE_UNKNOWN_CHARGER)
+		rk817_charge_set_chrg_param(charge, charge->usb_charger);
+	dev_info(dev, "charging speed %u mA (input %u mA)\n",
+		 charge->max_chrg_current, charge->max_input_current);
+	return count;
+}
+static DEVICE_ATTR_RW(charge_current_ma);
+
+static ssize_t charge_current_default_ma_show(struct device *dev,
+					      struct device_attribute *attr,
+					      char *buf)
+{
+	struct rk817_charger *charge = dev_get_drvdata(dev);
+
+	return sprintf(buf, "%u\n", charge->pdata->max_chrg_current);
+}
+static DEVICE_ATTR_RO(charge_current_default_ma);
+
+static struct attribute *rk817_charge_speed_attrs[] = {
+	&dev_attr_charge_current_ma.attr,
+	&dev_attr_charge_current_default_ma.attr,
+	NULL,
+};
+
+static const struct attribute_group rk817_charge_speed_group = {
+	.attrs = rk817_charge_speed_attrs,
+};
+
 static void rk817_charge_pre_init(struct rk817_charger *charge)
 {
 	charge->max_chrg_current = charge->pdata->max_chrg_current;
@@ -1646,6 +1722,10 @@ static int rk817_charge_probe(struct platform_device *pdev)
 	rk817_charge_get_otg5v_regulator(charge);
 
 	rk817_charge_pre_init(charge);
+
+	/* Settings > Battery > Battery details > Charging speed */
+	if (devm_device_add_group(charge->dev, &rk817_charge_speed_group))
+		dev_warn(charge->dev, "no charging speed setting\n");
 
 	device_init_wakeup(charge->dev, true);
 	charge->charging_ws = wakeup_source_register(charge->dev,
