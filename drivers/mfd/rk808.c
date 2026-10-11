@@ -976,9 +976,17 @@ static int rk817_pinctrl_init(struct device *dev, struct rk808 *rk808)
 		dev_err(dev, "Add rk805-pinctrl dev failed!\n");
 		return ret;
 	}
-	if (dev->pins && !IS_ERR(dev->pins->p)) {
-		dev_info(dev, "had get a pinctrl!\n");
-		return 0;
+	/*
+	 * Since 4.19.y the driver core's pinctrl handle exists even though the
+	 * rk805-pinctrl added above wasn't there when it was made, and it lacks the
+	 * pmic-sleep, pmic-power-off and pmic-reset states. Without them the sleep pin
+	 * is never set up and power off and restart hang in firmware. 4.19.183 failed
+	 * that lookup and dropped the handle, so do the same and get a complete one.
+	 */
+	if (dev->pins && !IS_ERR_OR_NULL(dev->pins->p)) {
+		devm_pinctrl_put(dev->pins->p);
+		devm_kfree(dev, dev->pins);
+		dev->pins = NULL;
 	}
 
 	rk808->pins = devm_kzalloc(dev, sizeof(struct rk808_pin_info),
