@@ -712,6 +712,18 @@ static void rk817_charge_set_input_current(struct rk817_charger *charge,
 					 INPUT_CUR_3000MA);
 
 	rk817_charge_ilimit_enable(charge);
+
+	/*
+	 * PMIC_CHRG_IN goes back to its reset value (4.4 V input voltage
+	 * limit) when the charger is unplugged (found by the mainline
+	 * rk817_charger driver, which sets it again on every plug). Probe
+	 * only set it once, so set the DT's min_input_voltage again with
+	 * every input current change: a weak charger or a long cable then
+	 * gets the same protection on every plug-in, not only the first.
+	 */
+	if (charge->min_input_voltage >= 4000)
+		rk817_charge_set_input_voltage(charge,
+					       charge->min_input_voltage);
 }
 
 static void rk817_charge_set_chrg_term_mod(struct rk817_charger *charge,
