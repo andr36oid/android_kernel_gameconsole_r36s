@@ -867,6 +867,16 @@ static void rk817_charge_set_chrg_param(struct rk817_charger *charge,
 		break;
 	}
 
+	/* for problem reports: which charger it took this for and what it may draw */
+	if (charger == USB_TYPE_USB_CHARGER || charger == USB_TYPE_CDP_CHARGER)
+		dev_info(charge->dev, "%s plugged in: charge %u mA, input 1500 mA\n",
+			 charger == USB_TYPE_USB_CHARGER ? "USB port" : "USB charging port",
+			 charge->max_chrg_current);
+	else if (charger == USB_TYPE_AC_CHARGER || charger == DC_TYPE_DC_CHARGER)
+		dev_info(charge->dev, "%s plugged in: charge %u mA, input %u mA\n",
+			 charger == USB_TYPE_AC_CHARGER ? "Wall charger" : "DC charger",
+			 charge->max_chrg_current, charge->max_input_current);
+
 	if (rk817_charge_online(charge) && rk817_charge_get_dsoc(charge) == 100)
 		charge->prop_status = POWER_SUPPLY_STATUS_FULL;
 
