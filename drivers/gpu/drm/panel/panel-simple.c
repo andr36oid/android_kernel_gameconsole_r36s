@@ -3080,6 +3080,54 @@ static const struct of_device_id platform_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, platform_of_match);
 
+/*
+ * Offer the panel's other display-timings too, so userspace can change the
+ * refresh rate. The native mode stays first and preferred, so the panel still
+ * starts in it; timings with a refresh rate already offered are left out.
+ */
+static void panel_simple_of_get_more_modes(struct device *dev,
+					   struct panel_desc *desc)
+{
+	struct display_timings *disp;
+	struct drm_display_mode *modes;
+	struct videomode vm;
+	unsigned int i, j, num = 1;
+
+	disp = of_get_display_timings(dev->of_node);
+	if (!disp)
+		return;
+	if (disp->num_timings < 2)
+		goto out;
+
+	modes = devm_kcalloc(dev, disp->num_timings, sizeof(*modes), GFP_KERNEL);
+	if (!modes)
+		goto out;
+
+	drm_mode_copy(&modes[0], desc->modes);
+	modes[0].type |= DRM_MODE_TYPE_PREFERRED;
+
+	for (i = 0; i < disp->num_timings; i++) {
+		struct drm_display_mode *m = &modes[num];
+
+		if (i == disp->native_mode || videomode_from_timings(disp, &vm, i))
+			continue;
+		drm_display_mode_from_videomode(&vm, m);
+		if (m->hdisplay != modes[0].hdisplay ||
+		    m->vdisplay != modes[0].vdisplay)
+			continue;
+		for (j = 0; j < num; j++)
+			if (drm_mode_vrefresh(&modes[j]) == drm_mode_vrefresh(m))
+				break;
+		if (j == num)
+			num++;
+	}
+
+	desc->modes = modes;
+	desc->num_modes = num;
+out:
+	display_timings_release(disp);
+}
+
 static int panel_simple_of_get_desc_data(struct device *dev,
 					 struct panel_desc *desc)
 {
@@ -3099,6 +3147,8 @@ static int panel_simple_of_get_desc_data(struct device *dev,
 		desc->modes = mode;
 		desc->num_modes = 1;
 		desc->bus_flags = bus_flags;
+
+		panel_simple_of_get_more_modes(dev, desc);
 
 		of_property_read_u32(np, "bpc", &desc->bpc);
 		of_property_read_u32(np, "bus-format", &desc->bus_format);
