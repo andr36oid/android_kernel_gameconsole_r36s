@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: (GPL-2.0+ OR MIT)
 /*
- * EXPERIMENTAL - not tested on hardware by andr36oid. Keep a copy of the
- * files you replace so you can go back.
+ * EXPERIMENTAL - keep a copy of the files you replace so you can go back.
+ * Tested on a V12 clone by an andr36oid user (2026-10-12): picture works. Its
+ * stock card DTB described G80 wiring, which did not give a picture.
  *
  * EE clone "R36S-V12 2023-08-18 Variant 3 Panel A": wiring as Variant 3,
  * with "Panel A" (23-command init sequence).
