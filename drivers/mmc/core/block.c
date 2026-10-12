@@ -2307,7 +2307,16 @@ static struct mmc_blk_data *mmc_blk_alloc_req(struct mmc_card *card,
 	struct mmc_blk_data *md;
 	int devidx, ret;
 
-	devidx = ida_simple_get(&mmc_blk_ida, 0, max_devices, GFP_KERNEL);
+	/*
+	 * andr36oid: the disk is named after its slot (mmcblk<host index>), so give it
+	 * the device numbers of that slot too. Taken in probe order, the boot card
+	 * became 179:32 whenever the second slot's card was found first, and
+	 * Android looks for EASYROMS as public:179,7.
+	 */
+	devidx = ida_simple_get(&mmc_blk_ida, card->host->index,
+				card->host->index + 1, GFP_KERNEL);
+	if (devidx < 0)
+		devidx = ida_simple_get(&mmc_blk_ida, 0, max_devices, GFP_KERNEL);
 	if (devidx < 0) {
 		/*
 		 * We get -ENOSPC because there are no more any available
