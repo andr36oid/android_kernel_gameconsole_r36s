@@ -34,6 +34,68 @@ static const struct of_device_id pm_match_table[] = {
 	{ },
 };
 
+/*
+ * andr36oid: Settings > Deep sleep changes the sleep and wake-up flags while the
+ * console runs, to find the cause of consoles that never wake. The firmware (BL31)
+ * keeps what it gets here and uses it at every sleep. Writing "default" goes back
+ * to the DTB's value. Init writes the saved choice (persist.andr36oid.sleep_mode,
+ * persist.andr36oid.sleep_wakeup) at every start.
+ */
+struct sleep_cfg {
+	u32 ctrl;
+	u32 dt;
+	u32 cur;
+	bool known;
+};
+
+static struct sleep_cfg sleep_mode_cfg = { .ctrl = SUSPEND_MODE_CONFIG };
+static struct sleep_cfg sleep_wakeup_cfg = { .ctrl = WKUP_SOURCE_CONFIG };
+
+static int sleep_cfg_set(const char *val, const struct kernel_param *kp)
+{
+	struct sleep_cfg *cfg = kp->arg;
+	u32 v;
+	int ret;
+
+	if (!cfg->known)
+		return -ENODEV;
+	if (sysfs_streq(val, "default") || sysfs_streq(val, "")) {
+		v = cfg->dt;
+	} else {
+		ret = kstrtou32(val, 0, &v);
+		if (ret)
+			return ret;
+	}
+	ret = sip_smc_set_suspend_mode(cfg->ctrl, v, 0);
+	if (ret)
+		return -EIO;
+	cfg->cur = v;
+	pr_info("rockchip-suspend: %s = 0x%x (DTB: 0x%x)\n", kp->name, v, cfg->dt);
+	return 0;
+}
+
+static int sleep_cfg_get(char *buf, const struct kernel_param *kp)
+{
+	struct sleep_cfg *cfg = kp->arg;
+
+	return sprintf(buf, "0x%x default 0x%x\n", cfg->cur, cfg->dt);
+}
+
+static const struct kernel_param_ops sleep_cfg_ops = {
+	.set = sleep_cfg_set,
+	.get = sleep_cfg_get,
+};
+
+module_param_cb(sleep_mode, &sleep_cfg_ops, &sleep_mode_cfg, 0644);
+module_param_cb(sleep_wakeup, &sleep_cfg_ops, &sleep_wakeup_cfg, 0644);
+
+static void sleep_cfg_init(struct sleep_cfg *cfg, u32 v)
+{
+	cfg->dt = v;
+	cfg->cur = v;
+	cfg->known = true;
+}
+
 static void rockchip_pm_virt_pwroff_prepare(void)
 {
 	int error;
@@ -80,15 +142,19 @@ static int __init pm_config_init(struct platform_device *pdev)
 				       "rockchip,sleep-mode-config",
 				       &mode_config, 1))
 		dev_warn(&pdev->dev, "not set sleep mode config\n");
-	else
+	else {
 		sip_smc_set_suspend_mode(SUSPEND_MODE_CONFIG, mode_config, 0);
+		sleep_cfg_init(&sleep_mode_cfg, mode_config);
+	}
 
 	if (of_property_read_u32_array(node,
 				       "rockchip,wakeup-config",
 				       &wakeup_config, 1))
 		dev_warn(&pdev->dev, "not set wakeup-config\n");
-	else
+	else {
 		sip_smc_set_suspend_mode(WKUP_SOURCE_CONFIG, wakeup_config, 0);
+		sleep_cfg_init(&sleep_wakeup_cfg, wakeup_config);
+	}
 
 	if (of_property_read_u32_array(node,
 				       "rockchip,pwm-regulator-config",
