@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * RX6H: EE clone, K36 board with Panel 4 and one SD card slot. Tested on
+ * hardware by andr36oid (2026-10-12): screen, buttons, sticks, speaker.
+ * Differs from rk3326-r36s-clone-k36-panel4.dts by the stick directions
+ * (both sticks turned around), the external speaker amplifier and the
+ * battery. Values from the stock DTB rf3700kg3sa_boe.dtb.
+ */
+
+/dts-v1/;
+#include "rk3326-r36s-clone-ee-k36.dtsi"
+#include "rk3326-r36s-clone-panel9.dtsi"
+
+/ {
+	model = "RX6H (EE clone, K36 board, Panel 4)";
+};
+
+&joypad {
+	/delete-property/ invert-absx;
+	/delete-property/ invert-absy;
+	invert-absrx;
+	invert-absry;
+};
+
+&rk817 {
+	battery {
+		ocv_table = <3400 3656 3677 3700 3726 3743 3762
+			3778 3793 3811 3834 3862 3908 3957
+			3990 4049 4092 4143 4196 4251 4311>;
+		design_capacity = <3145>;
+		design_qmax = <3459>;
+		bat_res = <150>;
+		power_off_thresd = <3500>;
+		zero_algorithm_vol = <3850>;
+	};
+
+	/* the speaker runs through an external amplifier (stock "use-ext-amplifier") */
+	codec {
+		use-ext-amplifier;
+	};
+};
