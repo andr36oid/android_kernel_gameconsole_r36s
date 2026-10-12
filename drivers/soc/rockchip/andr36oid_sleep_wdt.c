@@ -10,8 +10,11 @@
  * every phase. If one phase hangs for longer than the timeout (~21 s at
  * 100 MHz), the SoC resets and the console boots normally.
  *
- * It is stopped in the noirq phase, before the firmware puts the SoC to
- * sleep, so it never runs while the console is asleep, however long that is.
+ * It is stopped in the last step before the firmware puts the SoC to sleep
+ * (syscore, after the other cores are off) and started again in the first
+ * step after it, so it never runs while the console is asleep, however long
+ * that is, and the only part it doesn't watch is the firmware itself. A
+ * reset from it keeps the RAM, so ramoops shows where the kernel hung.
  * It does not use the watchdog framework: there is no /dev/watchdog and no
  * restart handler, so reboot works as before. The DT node stays disabled
  * for dw_wdt; this driver finds it by its compatible string.
@@ -26,6 +29,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/reset.h>
+#include <linux/syscore_ops.h>
 
 #define WDT_CR		0x00
 #define WDT_CR_EN	BIT(0)
@@ -90,17 +94,22 @@ static int sleep_wdt_kick_cb(struct device *dev)
 	return 0;
 }
 
-static int sleep_wdt_suspend_noirq(struct device *dev)
+/* the last step before the firmware, and the first one after it */
+static int sleep_wdt_syscore_suspend(void)
 {
 	sleep_wdt_disarm();
 	return 0;
 }
 
-static int sleep_wdt_resume_noirq(struct device *dev)
+static void sleep_wdt_syscore_resume(void)
 {
 	sleep_wdt_arm();
-	return 0;
 }
+
+static struct syscore_ops sleep_wdt_syscore_ops = {
+	.suspend	= sleep_wdt_syscore_suspend,
+	.resume		= sleep_wdt_syscore_resume,
+};
 
 static void sleep_wdt_complete(struct device *dev)
 {
@@ -111,8 +120,8 @@ static const struct dev_pm_ops sleep_wdt_pm_ops = {
 	.prepare	= sleep_wdt_prepare,
 	.suspend	= sleep_wdt_kick_cb,
 	.suspend_late	= sleep_wdt_kick_cb,
-	.suspend_noirq	= sleep_wdt_suspend_noirq,
-	.resume_noirq	= sleep_wdt_resume_noirq,
+	.suspend_noirq	= sleep_wdt_kick_cb,
+	.resume_noirq	= sleep_wdt_kick_cb,
 	.resume_early	= sleep_wdt_kick_cb,
 	.resume		= sleep_wdt_kick_cb,
 	.complete	= sleep_wdt_complete,
@@ -155,6 +164,7 @@ static int sleep_wdt_probe(struct platform_device *pdev)
 	sw.top = WDT_MAX_TOP;
 	reset_control_deassert(sw.rst);
 
+	register_syscore_ops(&sleep_wdt_syscore_ops);
 	dev_info(&pdev->dev, "armed during suspend and resume, %u s per phase\n",
 		 top_seconds(sw.top));
 	return 0;
@@ -188,9 +198,10 @@ static int __init sleep_wdt_init(void)
 	if (ret)
 		return ret;
 	/*
-	 * Registered after the DT devices, so its suspend callback runs
-	 * before theirs and its resume callback after theirs; the watchdog
-	 * is armed in .prepare, before any device suspends.
+	 * Registered before the DT devices (the PM core walks devices in
+	 * registration order): its .prepare runs before every other device's
+	 * and its .complete after, and its kicks come after theirs on the way
+	 * down and before theirs on the way up.
 	 */
 	pdev = platform_device_register_simple("andr36oid-sleep-wdt", -1, NULL, 0);
 	if (IS_ERR(pdev)) {
@@ -199,7 +210,7 @@ static int __init sleep_wdt_init(void)
 	}
 	return 0;
 }
-late_initcall(sleep_wdt_init);
+arch_initcall(sleep_wdt_init);
 
 MODULE_DESCRIPTION("andr36oid: hardware watchdog during suspend and resume");
 MODULE_LICENSE("GPL");

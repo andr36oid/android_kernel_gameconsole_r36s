@@ -1172,6 +1172,20 @@
 &rockchip_suspend {
 	status = "okay";
 	rockchip,sleep-debug-en = <1>;
+	/*
+	 * The stock flags without PMU_PMUALIVE_32K and PMU_DIS_OSC: the 24 MHz
+	 * crystal keeps running in sleep. With them, our BL31 (v1.14, 2018)
+	 * times the wake-up with a ring oscillator it measures only once, when
+	 * the console goes to sleep; Rockchip fixed that in v1.33. A suspect for
+	 * consoles that never wake from deep sleep. Costs a little battery.
+	 */
+	rockchip,sleep-mode-config = <
+		(0
+		| RKPM_SLP_ARMOFF
+		| RKPM_SLP_PMU_HW_PLLS_PD
+		| RKPM_SLP_PMIC_LP
+		)
+	>;
 };
 
 &saradc {
