@@ -195,7 +195,7 @@
 	hfront-porch = <46>;
 	hsync-len = <2>;
 	hback-porch = <44>;
-	vfront-porch = <187>;	/* was 16: 80.0 Hz; 60.01 Hz, same pixel clock */
+	vfront-porch = <16>;	/* 80 Hz like the stock DTBs: an RX6H panel stays dark at 60 Hz (porch 187) */
 	vsync-len = <2>;
 	vback-porch = <14>;
 	hsync-active = <0>;
