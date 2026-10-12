@@ -868,13 +868,19 @@
 				};
 			};
 
-			/* Not Used */
+			/*
+			 * On in sleep and awake, as in the stock and ArkOS DTBs. We
+			 * used to switch it off, the only rail where we differed, and
+			 * consoles sometimes never woke from deep sleep.
+			 */
 			vcc_1v0: LDO_REG1 {
+				regulator-always-on;
+				regulator-boot-on;
 				regulator-min-microvolt = <1000000>;
 				regulator-max-microvolt = <1000000>;
 				regulator-name = "vcc_1v0";
 				regulator-state-mem {
-					regulator-off-in-suspend;
+					regulator-on-in-suspend;
 					regulator-suspend-microvolt = <1000000>;
 				};
 			};
