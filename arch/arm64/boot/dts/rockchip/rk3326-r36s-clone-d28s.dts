@@ -1,0 +1,111 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Diium D-28S: EE clone, K36 board with a 2.8" 480x640 panel mounted
+ * sideways and no analog sticks. Tested on hardware by andr36oid
+ * (2026-10-12): screen, buttons, speaker.
+ * Panel values and battery from the D-28S ArkOS DTB by mcasoo
+ * (github.com/manster-zz/Diium-D-28S, rk3326-U8-linux.dtb).
+ * Android turns the picture to landscape through the boot script of the
+ * BOOT/Devices/D-28S profile (androidboot.sf_orientation), like the R50S.
+ */
+
+/dts-v1/;
+#include "rk3326-r36s-clone-ee-k36.dtsi"
+
+/ {
+	model = "Diium D-28S (EE clone, K36 board, 480x640 panel)";
+};
+
+&dsi {
+	panel@0 {
+		prepare-delay-ms = <20>;
+		reset-delay-ms = <20>;
+		init-delay-ms = <20>;
+		enable-delay-ms = <120>;
+		disable-delay-ms = <20>;
+		unprepare-delay-ms = <20>;
+		width-mm = <153>;
+		height-mm = <85>;
+		dsi,flags = <(MIPI_DSI_MODE_VIDEO |
+		      MIPI_DSI_MODE_VIDEO_BURST |
+		      MIPI_DSI_MODE_EOT_PACKET |
+		      MIPI_DSI_MODE_LPM)>;
+		dsi,lanes = <2>;
+		panel-init-sequence = [
+			39 00 06 ff 77 01 00 00 13
+			15 00 02 ef 08
+			39 00 06 ff 77 01 00 00 10
+			39 00 03 c0 4f 00
+			39 00 03 c1 10 0c
+			39 00 03 c2 01 14
+			15 00 02 cc 10
+			39 00 11 b0 0a 18 1e 12 16 0c 0e 0d 0c 29 06 14 13 29 33 1c
+			39 00 11 b1 0a 19 21 0a 0c 00 0c 03 03 23 01 0e 0c 27 2b 1c
+			39 00 06 ff 77 01 00 00 11
+			15 00 02 b0 5d
+			15 00 02 b1 4f
+			15 00 02 b2 00
+			15 00 02 b3 80
+			15 00 02 b5 0c
+			15 00 02 b7 85
+			15 00 02 b8 20
+			15 00 02 c1 78
+			15 00 02 c2 78
+			15 00 02 d0 88
+			39 00 04 e0 00 00 02
+			39 00 0c e1 06 a0 08 a0 05 a0 07 a0 00 44 44
+			39 00 0d e2 20 20 44 44 96 a0 00 00 96 a0 00 00
+			39 00 05 e3 00 00 22 22
+			39 00 03 e4 44 44
+			39 00 11 e5 0d 91 0a a0 0f 93 0a a0 09 8d 0a a0 0b 8f 0a a0
+			39 00 05 e6 00 00 22 22
+			39 00 03 e7 44 44
+			39 00 11 e8 0c 90 0a a0 0e 92 0a a0 08 8c 0a a0 0a 8e 0a a0
+			39 00 03 e9 36 00
+			39 00 08 eb 00 01 e4 e4 44 88 40
+			39 00 11 ed ff 45 67 fa 01 2b cf ff ff fc b2 10 af 76 54 ff
+			39 00 07 ef 10 0d 04 08 3f 1f
+			15 00 02 36 00
+			15 00 02 35 00
+			05 78 01 11
+			05 64 01 29
+		];
+		panel-exit-sequence = [
+			05 00 01 28
+			05 00 01 10
+		];
+		display-timings {
+			/delete-node/ timing1;
+			/delete-node/ timing2;
+		};
+	};
+};
+
+&timing0 {
+	clock-frequency = <30000000>;
+	hactive = <480>;
+	vactive = <640>;
+	hfront-porch = <20>;
+	hsync-len = <4>;
+	hback-porch = <20>;
+	vfront-porch = <12>;
+	vsync-len = <4>;
+	vback-porch = <16>;
+	hsync-active = <0>;
+	vsync-active = <0>;
+	de-active = <0>;
+	pixelclk-active = <0>;
+};
+
+&rk817 {
+	battery {
+		ocv_table = <3500 3527 3556 3581 3599 3616 3635
+			3658 3687 3728 3780 3824 3859 3887
+			3918 3961 4001 4028 4063 4095 4167>;
+		design_capacity = <1882>;
+		design_qmax = <2070>;
+		bat_res = <180>;
+		power_off_thresd = <3500>;
+		zero_algorithm_vol = <3850>;
+	};
+};
