@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Kinhank K36: EE clone, K36 board with Panel 1. Tested on hardware by
+ * andr36oid (2026-10-12): screen, buttons, sticks, speaker.
+ * Differs from rk3326-r36s-clone-k36-panel1.dts (right for an L35) by the
+ * right stick, which is turned around on both axes, and the battery (the
+ * early K36 2353 mAh table). Values from the stock DTB
+ * rk3326-evb-lp3-v12-linux.dtb.
+ */
+
+/dts-v1/;
+#include "rk3326-r36s-clone-ee-k36.dtsi"
+#include "rk3326-r36s-clone-panel8.dtsi"
+
+/ {
+	model = "Kinhank K36 (EE clone, K36 board, Panel 1)";
+};
+
+&joypad {
+	invert-absrx;
+	invert-absry;
+};
+
+&rk817 {
+	battery {
+		ocv_table = <3500 3530 3559 3584 3604 3620 3638
+			3661 3691 3735 3791 3834 3864 3887
+			3904 3943 3991 4019 4029 4066 4166>;
+		design_capacity = <2353>;
+		design_qmax = <2588>;
+		bat_res = <150>;
+		power_off_thresd = <3500>;
+		zero_algorithm_vol = <3850>;
+	};
+};
