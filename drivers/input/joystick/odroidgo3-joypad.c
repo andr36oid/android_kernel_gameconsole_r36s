@@ -784,6 +784,11 @@ static DEVICE_ATTR(rumble_boost_weak, S_IWUSR | S_IRUGO,
  *
  * /sys/devices/platform/odroidgo3-joypad/stick_deadzone [rw]
  *   radial dead zone in percent (0-50) used while stick_cal is set.
+ *
+ * /sys/devices/platform/odroidgo3-joypad/stick_invert [rw]
+ *   whether each axis is reported backwards: "x y rx ry", 0 or 1 each.
+ *   Starts from the DT's invert-abs* properties; clones that wire a stick
+ *   the other way round can be fixed without a new DTB.
  */
 /*----------------------------------------------------------------------------*/
 static int stick_raw_limit(struct joypad *joypad)
@@ -920,6 +925,66 @@ static DEVICE_ATTR(stick_deadzone, S_IWUSR | S_IRUGO,
 		   joypad_show_stick_deadzone,
 		   joypad_store_stick_deadzone);
 
+static const int stick_invert_axes[] = { ABS_X, ABS_Y, ABS_RX, ABS_RY };
+
+static struct bt_adc *joypad_axis_adc(struct joypad *joypad, int axis)
+{
+	int nbtn;
+
+	for (nbtn = 0; nbtn < joypad->amux_count; nbtn++)
+		if (joypad->adcs[nbtn].report_type == axis)
+			return &joypad->adcs[nbtn];
+	return NULL;
+}
+
+static ssize_t joypad_store_stick_invert(struct device *dev,
+					 struct device_attribute *attr,
+					 const char *buf,
+					 size_t count)
+{
+	struct platform_device *pdev  = to_platform_device(dev);
+	struct joypad *joypad = platform_get_drvdata(pdev);
+	unsigned int v[ARRAY_SIZE(stick_invert_axes)];
+	struct bt_adc *adc;
+	int i;
+
+	if (sscanf(buf, "%u %u %u %u", &v[0], &v[1], &v[2], &v[3]) != 4)
+		return -EINVAL;
+	for (i = 0; i < ARRAY_SIZE(v); i++)
+		if (v[i] > 1)
+			return -EINVAL;
+
+	mutex_lock(&joypad->lock);
+	for (i = 0; i < ARRAY_SIZE(v); i++) {
+		adc = joypad_axis_adc(joypad, stick_invert_axes[i]);
+		if (adc)
+			adc->invert = v[i];
+	}
+	mutex_unlock(&joypad->lock);
+	return count;
+}
+
+static ssize_t joypad_show_stick_invert(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	struct platform_device *pdev  = to_platform_device(dev);
+	struct joypad *joypad = platform_get_drvdata(pdev);
+	struct bt_adc *adc;
+	int i, len = 0;
+
+	for (i = 0; i < ARRAY_SIZE(stick_invert_axes); i++) {
+		adc = joypad_axis_adc(joypad, stick_invert_axes[i]);
+		len += sprintf(buf + len, "%s%d", i ? " " : "",
+			       adc ? READ_ONCE(adc->invert) : 0);
+	}
+	return len + sprintf(buf + len, "\n");
+}
+
+static DEVICE_ATTR(stick_invert, S_IWUSR | S_IRUGO,
+		   joypad_show_stick_invert,
+		   joypad_store_stick_invert);
+
 static struct attribute *joypad_attrs[] = {
 	&dev_attr_poll_interval.attr,
 	&dev_attr_adc_fuzz.attr,
@@ -933,6 +998,7 @@ static struct attribute *joypad_attrs[] = {
 	&dev_attr_stick_raw.attr,
 	&dev_attr_stick_cal.attr,
 	&dev_attr_stick_deadzone.attr,
+	&dev_attr_stick_invert.attr,
 	NULL,
 };
 
