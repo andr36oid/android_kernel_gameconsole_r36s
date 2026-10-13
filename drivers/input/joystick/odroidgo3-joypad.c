@@ -676,6 +676,10 @@ static ssize_t joypad_store_period(struct device *dev,
 	struct platform_device *pdev  = to_platform_device(dev);
 	struct joypad *joypad = platform_get_drvdata(pdev);
 
+	/* no PWM motor (none at all, or one on a GPIO): no period */
+	if (IS_ERR_OR_NULL(joypad->pwm))
+		return -ENODEV;
+
 	mutex_lock(&joypad->lock);
 	pwm_set_period(joypad->pwm, simple_strtoul(buf, NULL, 10));
 	mutex_unlock(&joypad->lock);
@@ -690,7 +694,10 @@ static ssize_t joypad_show_period(struct device *dev,
 {
 	struct platform_device *pdev  = to_platform_device(dev);
 	struct joypad *joypad = platform_get_drvdata(pdev);
-	
+
+	/* reading it used to oops on boards without a PWM motor */
+	if (IS_ERR_OR_NULL(joypad->pwm))
+		return sprintf(buf, "0\n");
 	return sprintf(buf, "%d\n", pwm_get_period(joypad->pwm));
 }
 
