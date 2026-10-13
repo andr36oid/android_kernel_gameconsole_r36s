@@ -23,8 +23,16 @@
  * while charging switched off. Blinking stops in sleep; the LED then holds
  * the first colour, or the notification colour while one is waiting.
  *
+ * The first colour of the table is what the LED shows at rest: "off", or
+ * green on the genuine R36S.
+ *
  * Files in /sys/devices/platform/andr36oid-status-led/:
  *   colors (r)  names of the colours this LED can show
+ *   table (rw)  "<name> <state per pin>; ..." replaces the colour table, for
+ *               a board whose wiring the colour check in Settings found;
+ *               "default" goes back to the DT's. The other settings go back
+ *               to the DT's where its colours still exist, so write them
+ *               again afterwards.
  *   pins (r)    how many pins it uses
  *   mode, battery, charging, full (rw)   see above; "full" is like
  *               "charging" for a full battery with the charger still in.
@@ -659,8 +667,105 @@ static ssize_t state_show(struct device *dev, struct device_attribute *attr,
 }
 static DEVICE_ATTR_RO(state);
 
+static ssize_t table_show(struct device *dev, struct device_attribute *attr,
+			  char *buf)
+{
+	struct status_led *led = dev_get_drvdata(dev);
+	int i, j, n = 0;
+
+	mutex_lock(&led->lock);
+	for (i = 0; i < led->ncolors; i++) {
+		n += sprintf(buf + n, "%s%s", i ? "; " : "", led->names[i]);
+		for (j = 0; j < led->npins; j++)
+			n += sprintf(buf + n, " %d", led->states[i][j]);
+	}
+	mutex_unlock(&led->lock);
+	return n + sprintf(buf + n, "\n");
+}
+
+static int load_dt_table(struct status_led *led);
+static int load_dt_settings(struct status_led *led);
+
+/* "off 2 2; blue 1 2; ..." */
+static int parse_table(struct status_led *led, const char *buf,
+		       char names[][NAME_LEN], u8 states[][MAX_PINS])
+{
+	const char *p = buf, *w;
+	size_t len;
+	int n = 0, i, j;
+
+	while (next_word(&p, &w, &len)) {
+		if (n == MAX_COLORS || len >= NAME_LEN)
+			return -EINVAL;
+		memcpy(names[n], w, len);
+		names[n][len] = 0;
+		for (i = 0; i < n; i++)
+			if (!strcmp(names[i], names[n]))
+				return -EINVAL;
+		for (j = 0; j < led->npins; j++) {
+			if (!next_word(&p, &w, &len) || len != 1 ||
+			    w[0] < '0' || w[0] > '0' + PIN_FLOAT)
+				return -EINVAL;
+			states[n][j] = w[0] - '0';
+		}
+		p = skip_spaces(p);
+		if (*p == ';')
+			p++;
+		else if (*p)
+			return -EINVAL;
+		n++;
+	}
+	return n ? n : -EINVAL;
+}
+
+static void builtin_settings(struct status_led *led)
+{
+	led->mode.a = led->mode.b = RELEASE;
+	led->battery_mode = false;
+	led->charging.a = led->charging.b = RELEASE;
+	led->full.a = led->full.b = FOLLOW;
+	led->zones[0].min = 0;
+	led->zones[0].show.a = led->zones[0].show.b = 0;
+	led->nzones = 1;
+	led->zone = -1;
+	led->notify = -1;
+}
+
+static ssize_t table_store(struct device *dev, struct device_attribute *attr,
+			   const char *buf, size_t count)
+{
+	struct status_led *led = dev_get_drvdata(dev);
+	char names[MAX_COLORS][NAME_LEN];
+	u8 states[MAX_COLORS][MAX_PINS];
+	int n = 0, ret = 0;
+
+	if (strncmp(buf, "default", 7)) {
+		n = parse_table(led, buf, names, states);
+		if (n < 0)
+			return n;
+	}
+	mutex_lock(&led->lock);
+	if (n) {
+		memcpy(led->names, names, sizeof(names));
+		memcpy(led->states, states, sizeof(states));
+		led->ncolors = n;
+	} else {
+		ret = load_dt_table(led);
+	}
+	builtin_settings(led);
+	led->shown = -1;
+	evaluate(led);
+	mutex_unlock(&led->lock);
+	if (ret)
+		return ret;
+	load_dt_settings(led);
+	return count;
+}
+static DEVICE_ATTR_RW(table);
+
 static struct attribute *status_led_attrs[] = {
 	&dev_attr_colors.attr,
+	&dev_attr_table.attr,
 	&dev_attr_pins.attr,
 	&dev_attr_mode.attr,
 	&dev_attr_battery.attr,
@@ -675,13 +780,52 @@ ATTRIBUTE_GROUPS(status_led);
 
 /* ---------------------------------------------------------------- setup */
 
+static int load_dt_table(struct status_led *led)
+{
+	struct device_node *np = led->dev->of_node;
+	u32 states[MAX_COLORS * MAX_PINS];
+	int i, j, n, ret;
+
+	n = of_property_count_strings(np, "color-names");
+	if (n < 1 || n > MAX_COLORS)
+		return -EINVAL;
+	ret = of_property_read_u32_array(np, "color-states", states,
+					 n * led->npins);
+	if (ret)
+		return ret;
+	for (i = 0; i < n * led->npins; i++)
+		if (states[i] > PIN_FLOAT)
+			return -EINVAL;
+	for (i = 0; i < n; i++) {
+		const char *s;
+
+		of_property_read_string_index(np, "color-names", i, &s);
+		strscpy(led->names[i], s, NAME_LEN);
+		for (j = 0; j < led->npins; j++)
+			led->states[i][j] = states[i * led->npins + j];
+	}
+	led->ncolors = n;
+	return 0;
+}
+
+/* the DT's settings, through the same parsers as the files */
+static int load_dt_settings(struct status_led *led)
+{
+	struct device *dev = led->dev;
+	int bad = 0;
+
+	bad |= battery_store(dev, NULL, "default", 7) < 0;
+	bad |= charging_store(dev, NULL, "default", 7) < 0;
+	bad |= full_store(dev, NULL, "default", 7) < 0;
+	bad |= mode_store(dev, NULL, "default", 7) < 0;
+	return bad ? -EINVAL : 0;
+}
+
 static int status_led_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct device_node *np = dev->of_node;
 	struct status_led *led;
-	u32 states[MAX_COLORS * MAX_PINS];
-	int i, j, n, ret;
+	int ret;
 
 	led = devm_kzalloc(dev, sizeof(*led), GFP_KERNEL);
 	if (!led)
@@ -697,29 +841,11 @@ static int status_led_probe(struct platform_device *pdev)
 	if (led->npins < 1 || led->npins > MAX_PINS)
 		return -EINVAL;
 
-	n = of_property_count_strings(np, "color-names");
-	if (n < 1 || n > MAX_COLORS)
-		return -EINVAL;
-	led->ncolors = n;
-	for (i = 0; i < n; i++) {
-		const char *s;
-
-		of_property_read_string_index(np, "color-names", i, &s);
-		strscpy(led->names[i], s, NAME_LEN);
-	}
-	ret = of_property_read_u32_array(np, "color-states", states,
-					 n * led->npins);
+	ret = load_dt_table(led);
 	if (ret)
 		return ret;
-	for (i = 0; i < n; i++)
-		for (j = 0; j < led->npins; j++) {
-			if (states[i * led->npins + j] > PIN_FLOAT)
-				return -EINVAL;
-			led->states[i][j] = states[i * led->npins + j];
-		}
 
-	led->notify = -1;
-	led->zone = -1;
+	builtin_settings(led);
 	led->shown = -1;
 	INIT_DELAYED_WORK(&led->blink, blink_work);
 	INIT_DELAYED_WORK(&led->refresh, refresh_work);
@@ -729,11 +855,7 @@ static int status_led_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	/* the DT's settings, through the same parsers as the files */
-	if (battery_store(dev, NULL, "default", 7) < 0 ||
-	    charging_store(dev, NULL, "default", 7) < 0 ||
-	    full_store(dev, NULL, "default", 7) < 0 ||
-	    mode_store(dev, NULL, "default", 7) < 0)
+	if (load_dt_settings(led))
 		dev_warn(dev, "bad andr36oid,* setting in the DT\n");
 
 	led->psy_nb.notifier_call = psy_changed;
