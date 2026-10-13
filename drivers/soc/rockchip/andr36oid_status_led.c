@@ -21,13 +21,14 @@
  * Going up a level needs 2 % more than its threshold, so the colour doesn't
  * flicker at the edge. The rules run here, not in Android, so they also work
  * while charging switched off. Blinking stops in sleep; the LED then holds
- * the first colour.
+ * the first colour, or the notification colour while one is waiting.
  *
  * Files in /sys/devices/platform/andr36oid-status-led/:
  *   colors (r)  names of the colours this LED can show
  *   pins (r)    how many pins it uses
  *   mode, battery, charging, full (rw)   see above; "full" is like
- *               "charging" for a full battery with the charger still in
+ *               "charging" for a full battery with the charger still in.
+ *               "default" goes back to the DT's andr36oid,<name> value
  *   notify (rw) "<colour> <on ms> <off ms>" or "none"
  *   raw (rw)    one state per pin, 0 low, 1 high, 2 floating, or "none"
  *   state (r)   what it shows now and why
@@ -300,7 +301,9 @@ static void apply(struct status_led *led)
 		set_pins(led, led->raw_states);
 		return;
 	}
-	if (led->notify >= 0 && !led->suspended) {
+	if (led->notify >= 0 && led->suspended) {
+		c = led->notify;
+	} else if (led->notify >= 0) {
 		/* phase 0: the notification colour, 1: what would show otherwise */
 		c = led->phase ? led->base.a : led->notify;
 		delay = led->phase ? led->notify_off : led->notify_on;
@@ -358,6 +361,21 @@ static int psy_changed(struct notifier_block *nb, unsigned long event,
 
 /* ---------------------------------------------------------------- sysfs */
 
+/* "default": the DT's andr36oid,<name>, or the built-in one without it */
+static const char *dt_value(struct status_led *led, const char *name,
+			    const char *buf, const char *builtin)
+{
+	char prop[32];
+	const char *s;
+
+	if (strncmp(buf, "default", 7))
+		return buf;
+	snprintf(prop, sizeof(prop), "andr36oid,%s", name);
+	if (!of_property_read_string(led->dev->of_node, prop, &s))
+		return s;
+	return builtin;
+}
+
 static ssize_t colors_show(struct device *dev, struct device_attribute *attr,
 			   char *buf)
 {
@@ -396,10 +414,12 @@ static ssize_t mode_store(struct device *dev, struct device_attribute *attr,
 			  const char *buf, size_t count)
 {
 	struct status_led *led = dev_get_drvdata(dev);
-	size_t len = strcspn(buf, " \n");
+	size_t len;
 	struct show s;
 	int ret;
 
+	buf = dt_value(led, "mode", buf, "release");
+	len = strcspn(buf, " \n");
 	ret = parse_show(led, buf, len, true, &s);
 	if (ret)
 		return ret;
@@ -434,7 +454,17 @@ static ssize_t battery_store(struct device *dev, struct device_attribute *attr,
 {
 	struct status_led *led = dev_get_drvdata(dev);
 	struct level zones[MAX_ZONES];
-	int n = parse_zones(led, buf, zones);
+	int n;
+
+	buf = dt_value(led, "battery", buf, led->names[0]);
+	if (buf == led->names[0]) {
+		/* no DT rules: always the first colour */
+		zones[0].min = 0;
+		zones[0].show.a = zones[0].show.b = 0;
+		n = 1;
+	} else {
+		n = parse_zones(led, buf, zones);
+	}
 
 	if (n < 0)
 		return n;
@@ -459,11 +489,16 @@ static ssize_t charger_show(struct status_led *led, struct show *s, char *buf)
 }
 
 static ssize_t charger_store(struct status_led *led, struct show *s,
+			     const char *name, const char *builtin,
 			     const char *buf, size_t count)
 {
-	size_t len = strcspn(buf, " \n");
+	size_t len;
 	struct show v;
-	int ret = parse_show(led, buf, len, true, &v);
+	int ret;
+
+	buf = dt_value(led, name, buf, builtin);
+	len = strcspn(buf, " \n");
+	ret = parse_show(led, buf, len, true, &v);
 
 	if (ret)
 		return ret;
@@ -487,7 +522,8 @@ static ssize_t charging_store(struct device *dev, struct device_attribute *attr,
 {
 	struct status_led *led = dev_get_drvdata(dev);
 
-	return charger_store(led, &led->charging, buf, count);
+	return charger_store(led, &led->charging, "charging", "release", buf,
+			     count);
 }
 static DEVICE_ATTR_RW(charging);
 
@@ -504,7 +540,7 @@ static ssize_t full_store(struct device *dev, struct device_attribute *attr,
 {
 	struct status_led *led = dev_get_drvdata(dev);
 
-	return charger_store(led, &led->full, buf, count);
+	return charger_store(led, &led->full, "full", "battery", buf, count);
 }
 static DEVICE_ATTR_RW(full);
 
@@ -639,18 +675,6 @@ ATTRIBUTE_GROUPS(status_led);
 
 /* ---------------------------------------------------------------- setup */
 
-/* a default from the DT, through the same parser as the file */
-static void dt_default(struct status_led *led, const char *prop,
-		       ssize_t (*store)(struct device *, struct device_attribute *,
-					const char *, size_t))
-{
-	const char *s;
-
-	if (!of_property_read_string(led->dev->of_node, prop, &s) &&
-	    store(led->dev, NULL, s, strlen(s)) < 0)
-		dev_warn(led->dev, "bad %s \"%s\"\n", prop, s);
-}
-
 static int status_led_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -694,12 +718,6 @@ static int status_led_probe(struct platform_device *pdev)
 			led->states[i][j] = states[i * led->npins + j];
 		}
 
-	led->mode.a = led->mode.b = RELEASE;
-	led->charging.a = led->charging.b = RELEASE;
-	led->full.a = led->full.b = FOLLOW;
-	led->zones[0].min = 0;
-	led->zones[0].show.a = led->zones[0].show.b = 0;
-	led->nzones = 1;
 	led->notify = -1;
 	led->zone = -1;
 	led->shown = -1;
@@ -711,13 +729,12 @@ static int status_led_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	dt_default(led, "andr36oid,battery", battery_store);
-	dt_default(led, "andr36oid,charging", charging_store);
-	dt_default(led, "andr36oid,full", full_store);
-	dt_default(led, "andr36oid,mode", mode_store);
-	mutex_lock(&led->lock);
-	evaluate(led);
-	mutex_unlock(&led->lock);
+	/* the DT's settings, through the same parsers as the files */
+	if (battery_store(dev, NULL, "default", 7) < 0 ||
+	    charging_store(dev, NULL, "default", 7) < 0 ||
+	    full_store(dev, NULL, "default", 7) < 0 ||
+	    mode_store(dev, NULL, "default", 7) < 0)
+		dev_warn(dev, "bad andr36oid,* setting in the DT\n");
 
 	led->psy_nb.notifier_call = psy_changed;
 	ret = power_supply_reg_notifier(&led->psy_nb);
