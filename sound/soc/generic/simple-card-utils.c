@@ -11,6 +11,7 @@
 #include <linux/of.h>
 #include <linux/of_gpio.h>
 #include <linux/of_graph.h>
+#include <linux/workqueue.h>
 #include <sound/jack.h>
 #include <sound/simple_card_utils.h>
 
@@ -420,6 +421,38 @@ int asoc_simple_card_of_parse_widgets(struct snd_soc_card *card,
 }
 EXPORT_SYMBOL_GPL(asoc_simple_card_of_parse_widgets);
 
+/*
+ * hp_det_flip: read the headphone detect pin the other way round from the DT.
+ * Some clones wire the switch in the jack the other way, so the speaker goes
+ * quiet without headphones (or never does). Applies at once and rechecks the
+ * jack.
+ */
+static DEFINE_MUTEX(hp_det_lock);
+static struct snd_soc_jack_gpio *hp_det_gpio;
+static int hp_det_dt_invert;
+static bool hp_det_flip;
+
+static int hp_det_flip_set(const char *val, const struct kernel_param *kp)
+{
+	int ret;
+
+	mutex_lock(&hp_det_lock);
+	ret = param_set_bool(val, kp);
+	if (!ret && hp_det_gpio) {
+		hp_det_gpio->invert = hp_det_dt_invert ^ hp_det_flip;
+		mod_delayed_work(system_power_efficient_wq, &hp_det_gpio->work, 0);
+	}
+	mutex_unlock(&hp_det_lock);
+	return ret;
+}
+
+static const struct kernel_param_ops hp_det_flip_ops = {
+	.set = hp_det_flip_set,
+	.get = param_get_bool,
+};
+module_param_cb(hp_det_flip, &hp_det_flip_ops, &hp_det_flip, 0644);
+MODULE_PARM_DESC(hp_det_flip, "Read the headphone detect pin the other way round from the DT");
+
 int asoc_simple_card_init_jack(struct snd_soc_card *card,
 			       struct asoc_simple_jack *sjack,
 			       int is_hp, char *prefix)
@@ -467,8 +500,15 @@ int asoc_simple_card_init_jack(struct snd_soc_card *card,
 				      &sjack->jack,
 				      &sjack->pin, 1);
 
-		snd_soc_jack_add_gpios(&sjack->jack, 1,
-				       &sjack->gpio);
+		mutex_lock(&hp_det_lock);
+		if (is_hp) {
+			hp_det_dt_invert = sjack->gpio.invert;
+			sjack->gpio.invert ^= hp_det_flip;
+		}
+		if (!snd_soc_jack_add_gpios(&sjack->jack, 1, &sjack->gpio) &&
+		    is_hp)
+			hp_det_gpio = &sjack->gpio;
+		mutex_unlock(&hp_det_lock);
 	}
 
 	return 0;
