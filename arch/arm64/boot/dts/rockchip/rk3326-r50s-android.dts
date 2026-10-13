@@ -53,7 +53,27 @@
 	};
 };
 
+/*
+ * GPIO0_B7 switches the 5 V of the USB host port (vcc_host above). On the
+ * R36S the same pin is the rumble PWM, whose pinctrl would take the pin
+ * away from the regulator, so keep the PWM block off the pin.
+ */
+&pwm0 {
+	pinctrl-0 = <&vcc_host_en>;
+};
+
+&pinctrl {
+	usb {
+		vcc_host_en: vcc-host-en {
+			rockchip,pins = <0 RK_PB7 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+	};
+};
+
 &joypad {
+	/* no rumble motor: without pwms the gamepad doesn't offer rumble */
+	/delete-property/ pwms;
+	/delete-property/ pwm-names;
 	switch-rxy;
 	invert-absry;
 };
