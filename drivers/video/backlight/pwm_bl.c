@@ -38,6 +38,9 @@ struct pwm_bl_data {
 	bool			legacy;
 	unsigned int		post_pwm_on_delay;
 	unsigned int		pwm_off_delay;
+	/* andr36oid: start-up pulse, see pwm_backlight_update_status() */
+	unsigned int		kick_duty;
+	unsigned int		kick_ms;
 	int			(*notify)(struct device *,
 					  int brightness);
 	void			(*notify_after)(struct device *,
@@ -118,6 +121,16 @@ static int pwm_backlight_update_status(struct backlight_device *bl)
 
 	if (brightness > 0) {
 		duty_cycle = compute_duty_cycle(pb, brightness);
+		/*
+		 * andr36oid: the backlight chip of some clones (EE G80) doesn't start
+		 * from off at the lowest levels and the screen stays black. Switching
+		 * on, it gets a short stronger pulse first, then the real level.
+		 */
+		if (!pb->enabled && pb->kick_ms && duty_cycle < pb->kick_duty) {
+			pwm_config(pb->pwm, pb->kick_duty, pb->period);
+			pwm_backlight_power_on(pb, brightness);
+			msleep(pb->kick_ms);
+		}
 		pwm_config(pb->pwm, duty_cycle, pb->period);
 		pwm_backlight_power_on(pb, brightness);
 	} else
@@ -564,6 +577,17 @@ static int pwm_backlight_probe(struct platform_device *pdev)
 		pb->period = data->pwm_period_ns;
 
 	pb->lth_brightness = data->lth_brightness * (pb->period / pb->scale);
+
+	/* andr36oid: the start-up pulse, in percent of the period, and how long */
+	if (pdev->dev.of_node) {
+		u32 pct = 0;
+
+		of_property_read_u32(pdev->dev.of_node, "andr36oid,kick-percent", &pct);
+		of_property_read_u32(pdev->dev.of_node, "andr36oid,kick-ms", &pb->kick_ms);
+		pb->kick_duty = (u64)pb->period * min_t(u32, pct, 100) / 100;
+		if (!pb->kick_duty)
+			pb->kick_ms = 0;
+	}
 
 	memset(&props, 0, sizeof(struct backlight_properties));
 	props.type = BACKLIGHT_RAW;

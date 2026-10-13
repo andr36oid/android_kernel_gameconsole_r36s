@@ -140,6 +140,12 @@
 
 &backlight {
 	pwms = <&pwm1 0 25000 0>;
+	/*
+	 * At the lowest brightness the G80's backlight chip didn't always start
+	 * again after the screen was off: a 20 ms pulse at 50 % wakes it first.
+	 */
+	andr36oid,kick-percent = <50>;
+	andr36oid,kick-ms = <20>;
 };
 
 /*
