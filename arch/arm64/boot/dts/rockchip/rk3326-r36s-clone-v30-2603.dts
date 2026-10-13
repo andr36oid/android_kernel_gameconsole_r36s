@@ -236,6 +236,12 @@
 	pinctrl-0 = <&vcc_host_en>;
 };
 
+&joypad {
+	/* no rumble motor: without pwms the gamepad doesn't offer rumble */
+	/delete-property/ pwms;
+	/delete-property/ pwm-names;
+};
+
 &pinctrl {
 	usb {
 		vcc_host_en: vcc-host-en {

@@ -76,6 +76,9 @@
 };
 
 &joypad {
+	/* no rumble motor: without pwms the gamepad doesn't offer rumble */
+	/delete-property/ pwms;
+	/delete-property/ pwm-names;
 	amux-a-gpios = <&gpio2 RK_PC0 GPIO_ACTIVE_LOW>;
 	amux-b-gpios = <&gpio2 RK_PB7 GPIO_ACTIVE_LOW>;
 	amux-en-gpios = <&gpio2 RK_PB3 GPIO_ACTIVE_LOW>;

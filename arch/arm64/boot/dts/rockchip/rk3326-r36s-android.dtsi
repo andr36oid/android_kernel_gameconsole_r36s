@@ -39,7 +39,13 @@
 
        joypad: odroidgo3-joypad {
                 compatible = "odroidgo3-joypad";
-                pwms = <&pwm0 0 200000000 0>;		 
+		/*
+		 * Rumble motor pads on GPIO0_B7 (fitted on some boards, others
+		 * add a motor themselves). 20 ms: 50 Hz, as in the DTB that got
+		 * the V21's motor working, so the strength setting gives an
+		 * even buzz instead of the 5 Hz pulses of 200 ms.
+		 */
+                pwms = <&pwm0 0 20000000 0>;
                 pwm-names = "enable";
                 rumble-boost-weak = <0x0000>;
                 rumble-boost-strong = <0x0000>;
@@ -67,8 +73,11 @@
 
 		   * for rumble period(ns)
 		   /sys/devices/platform/odroidgo3_joypad/rumble_period
-		   ex) echo 20000000 > rumble_duty_cycle
-		   ex) cat rumble_duty_cycle -->get current duty cycle
+		   ex) echo 20000000 > rumble_period
+
+		   * motor and strength: "pwm", "gpio" or "none"; 0-100 %
+		   /sys/devices/platform/odroidgo3_joypad/rumble [r]
+		   /sys/devices/platform/odroidgo3_joypad/rumble_strength [rw]
 
 		   * for rumble boost(0~65535)
 		   /sys/devices/platform/odroidgo3_joypad/rumble_boost_weak
