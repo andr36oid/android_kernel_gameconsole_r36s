@@ -18,6 +18,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
+#include <linux/suspend.h>
 
 #include "internal.h"
 
@@ -33,6 +34,8 @@ struct regmap_irq_chip_data {
 
 	int irq;
 	int wake_count;
+	/* suspend_stats count of the sleep whose wake was last logged */
+	unsigned int wake_logged;
 
 	void *status_reg_buf;
 	unsigned int *status_buf;
@@ -275,6 +278,32 @@ static const struct irq_chip regmap_irq_chip = {
 	.irq_set_wake		= regmap_irq_set_wake,
 };
 
+/*
+ * "Resume caused by IRQ n" only names the chip's own interrupt. When this
+ * chip woke the system, name the first of its interrupts (power key, RTC,
+ * charger...) handled during that resume, so sleep logs show why a sleep
+ * ended. pm_wakeup_irq stays set until the next sleep, so only count
+ * interrupts handled while the resume is still running.
+ */
+static void regmap_irq_log_wake(struct regmap_irq_chip_data *data, int hwirq)
+{
+#ifdef CONFIG_PM_SLEEP
+	unsigned int count = suspend_stats.success + suspend_stats.fail + 1;
+	unsigned int virq;
+	struct irq_desc *desc;
+
+	if (pm_suspend_target_state == PM_SUSPEND_ON ||
+	    pm_wakeup_irq != data->irq || data->wake_logged == count)
+		return;
+	data->wake_logged = count;
+	virq = irq_find_mapping(data->domain, hwirq);
+	desc = irq_to_desc(virq);
+	dev_info(data->map->dev, "wakeup by irq %u (%s, %s %d)\n", virq,
+		 desc && desc->action && desc->action->name ?
+		 desc->action->name : "no handler", data->chip->name, hwirq);
+#endif
+}
+
 static irqreturn_t regmap_irq_thread(int irq, void *d)
 {
 	struct regmap_irq_chip_data *data = d;
@@ -379,6 +408,7 @@ static irqreturn_t regmap_irq_thread(int irq, void *d)
 	for (i = 0; i < chip->num_irqs; i++) {
 		if (data->status_buf[chip->irqs[i].reg_offset /
 				     map->reg_stride] & chip->irqs[i].mask) {
+			regmap_irq_log_wake(data, i);
 			handle_nested_irq(irq_find_mapping(data->domain, i));
 			handled = true;
 		}
