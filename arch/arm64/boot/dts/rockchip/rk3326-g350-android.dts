@@ -1,0 +1,105 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * BatleXP G350: the genuine R36S board with its own 640x480 panel timing and
+ * init sequence, battery, F5 button pin, right stick and headphone detect.
+ * Everything else (CPU, power, USB, sleep, fixes) comes from
+ * rk3326-r36s-android.dtsi, like the R46H.
+ * Panel, battery and pins from the G350 ArkOS DTB by Christian Haitian,
+ * shared by Russ Crandall (github.com/retrogamecorps/G350-ArkOS-dtb,
+ * rk3326-batlexp-linux.dtb). Not tested on hardware yet.
+ */
+
+/dts-v1/;
+#include "rk3326-r36s-android.dtsi"
+
+/ {
+	model = "BatleXP G350";
+};
+
+&joypad {
+	/* the right stick's X axis runs the other way */
+	invert-absrx;
+	abs_x-p-tuning = <150>;
+	abs_x-n-tuning = <150>;
+	abs_y-p-tuning = <150>;
+	abs_y-n-tuning = <150>;
+	abs_rx-p-tuning = <150>;
+	abs_rx-n-tuning = <150>;
+	abs_ry-p-tuning = <150>;
+	abs_ry-n-tuning = <150>;
+
+	sw13 {
+		gpios = <&gpio3 RK_PC5 GPIO_ACTIVE_LOW>;
+	};
+};
+
+/* headphone detect is active low here, high on the R36S */
+&{/rk817-sound} {
+	simple-audio-card,hp-det-gpio = <&gpio2 RK_PC6 GPIO_ACTIVE_LOW>;
+};
+
+&dsi {
+	panel@0 {
+		panel-init-sequence = [
+			39 00 04 b9 f1 12 83
+			39 00 06 b1 00 00 00 da 80
+			39 00 04 b2 00 13 70
+			39 00 0b b3 10 10 28 28 03 ff 00 00 00 00
+			15 00 02 b4 80
+			15 00 03 b5 0a 0a
+			15 00 03 b6 7f 7f
+			39 00 05 b8 26 62 f0 63
+			39 00 1c ba 33 81 05 f9 0e 0e 20 00 00 00 00 00 00 00 44 25 00 90 0a 00 00 01 4f 01 00 00 37
+			15 00 02 bc 47
+			39 00 04 bf 02 11 00
+			39 00 0a c0 73 73 50 50 00 00 12 50 00
+			39 00 0d c1 53 00 32 32 77 d1 cc cc 77 77 33 33
+			39 00 07 c6 82 00 bf ff 00 ff
+			39 00 07 c7 b8 00 0a 00 00 00
+			39 00 05 c8 10 40 1e 02
+			15 00 02 cc 0b
+			39 00 23 e0 00 07 0d 37 35 3f 41 44 06 0c 0d 0f 11 10 12 14 1a 00 07 0d 37 35 3f 41 44 06 0c 0d 0f 11 10 12 14 1a
+			39 00 0f e3 07 07 0b 0b 0b 0b 00 00 00 00 ff 00 c0 10
+			39 00 40 e9 c8 10 02 00 00 b0 b1 11 31 23 28 80 b0 b1 27 08 00 04 02 00 00 00 00 04 02 00 00 00 88 88 ba 60 24 08 88 88 88 88 88 88 88 ba 71 35 18 88 88 88 88 88 00 00 00 01 00 00 00 00 00 00 00 00 00
+			39 00 3e ea 97 0a 82 02 03 07 00 00 00 00 00 00 81 88 ba 17 53 88 88 88 88 88 88 80 88 ba 06 42 88 88 88 88 88 88 23 00 00 02 80 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			39 00 04 ef ff ff 01
+			05 c8 01 11
+			05 32 01 29
+		];
+		/* the faster modes are tuned for the R36S panel, untried on this one */
+		display-timings {
+			/delete-node/ timing1;
+			/delete-node/ timing2;
+		};
+	};
+};
+
+&timing0 {
+	clock-frequency = <50000000>;
+	hactive = <640>;
+	vactive = <480>;
+	hfront-porch = <450>;
+	hsync-len = <70>;
+	hback-porch = <450>;
+	vfront-porch = <17>;
+	vsync-len = <5>;
+	vback-porch = <13>;
+	hsync-active = <0>;
+	vsync-active = <0>;
+	de-active = <0>;
+	pixelclk-active = <1>;
+};
+
+&rk817 {
+	battery {
+		ocv_table = <3400 3438 3479 3519 3550 3578 3598
+			3613 3629 3647 3672 3713 3762 3807
+			3852 3895 3939 3990 4035 4092 4172>;
+		design_capacity = <3151>;
+		design_qmax = <3465>;
+		bat_res = <146>;
+		power_off_thresd = <3400>;
+		zero_algorithm_vol = <3850>;
+		max_soc_offset = <60>;
+	};
+};
