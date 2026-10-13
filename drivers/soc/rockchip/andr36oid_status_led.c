@@ -29,7 +29,7 @@
  *   mode, battery, charging, full (rw)   see above; "full" is like
  *               "charging" for a full battery with the charger still in.
  *               "default" goes back to the DT's andr36oid,<name> value
- *   notify (rw) "<colour> <on ms> <off ms>" or "none"
+ *   notify (rw) "<colour> <on ms> <off ms>" or "none"; off 0 is steady
  *   raw (rw)    one state per pin, 0 low, 1 high, 2 floating, or "none"
  *   state (r)   what it shows now and why
  */
@@ -301,7 +301,7 @@ static void apply(struct status_led *led)
 		set_pins(led, led->raw_states);
 		return;
 	}
-	if (led->notify >= 0 && led->suspended) {
+	if (led->notify >= 0 && (led->suspended || !led->notify_off)) {
 		c = led->notify;
 	} else if (led->notify >= 0) {
 		/* phase 0: the notification colour, 1: what would show otherwise */
@@ -571,7 +571,7 @@ static ssize_t notify_store(struct device *dev, struct device_attribute *attr,
 		c = -1;
 	} else {
 		if (sscanf(buf, "%15s %d %d", name, &on, &off) != 3 ||
-		    on < 50 || off < 50 || on > 60000 || off > 60000)
+		    on < 50 || (off && off < 50) || on > 60000 || off > 60000)
 			return -EINVAL;
 		c = find_color(led, name, strlen(name));
 		if (c < 0)
