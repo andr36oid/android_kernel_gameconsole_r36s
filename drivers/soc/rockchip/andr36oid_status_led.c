@@ -686,7 +686,7 @@ static ssize_t table_show(struct device *dev, struct device_attribute *attr,
 static int load_dt_table(struct status_led *led);
 static int load_dt_settings(struct status_led *led);
 
-/* "off 2 2; blue 1 2; ..." */
+/* "off 2 2; blue 1 2; ..." or without the spaces between states, "off 22;blue 12" */
 static int parse_table(struct status_led *led, const char *buf,
 		       char names[][NAME_LEN], u8 states[][MAX_PINS])
 {
@@ -703,10 +703,10 @@ static int parse_table(struct status_led *led, const char *buf,
 			if (!strcmp(names[i], names[n]))
 				return -EINVAL;
 		for (j = 0; j < led->npins; j++) {
-			if (!next_word(&p, &w, &len) || len != 1 ||
-			    w[0] < '0' || w[0] > '0' + PIN_FLOAT)
+			p = skip_spaces(p);
+			if (*p < '0' || *p > '0' + PIN_FLOAT)
 				return -EINVAL;
-			states[n][j] = w[0] - '0';
+			states[n][j] = *p++ - '0';
 		}
 		p = skip_spaces(p);
 		if (*p == ';')
