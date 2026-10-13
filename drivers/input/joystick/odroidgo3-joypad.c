@@ -1613,10 +1613,12 @@ static int joypad_rumble_setup(struct device *dev, struct joypad *joypad)
 	}
 
 	/*
-	 * No PWM either: the board has no motor (EE clones, or the pin does
-	 * something else there), so games aren't told there is rumble.
+	 * The DT says the board has no motor (EE clones, or the pin does
+	 * something else there), so games aren't told there is rumble. Such
+	 * DTs keep pwms for older kernels; a DT without pwms has no motor too.
 	 */
-	if (!of_find_property(dev->of_node, "pwms", NULL)) {
+	if (of_property_read_bool(dev->of_node, "andr36oid,no-rumble") ||
+	    !of_find_property(dev->of_node, "pwms", NULL)) {
 		dev_info(dev, "no rumble motor\n");
 		return 0;
 	}

@@ -54,9 +54,12 @@
 };
 
 &joypad {
-	/* no rumble motor: without pwms the gamepad doesn't offer rumble */
-	/delete-property/ pwms;
-	/delete-property/ pwm-names;
+	/*
+	 * No rumble motor, so the gamepad doesn't offer rumble. pwms stays: the
+	 * older joypad driver in the resizer and recovery kernels oopses when
+	 * it is missing.
+	 */
+	andr36oid,no-rumble;
 };
 
 &pinctrl {
