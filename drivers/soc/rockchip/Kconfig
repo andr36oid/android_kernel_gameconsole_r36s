@@ -93,6 +93,14 @@ config ANDR36OID_SLEEP_WDT
 	  instead of freezing it. Stopped while the console is asleep. Do
 	  not combine with DW_WATCHDOG.
 
+config ANDR36OID_STATUS_LED
+	bool "R36S status LED"
+	depends on GPIOLIB && OF && POWER_SUPPLY
+	help
+	  Drives the status LED of the R36S and its clones from a colour
+	  table in the DT: battery level colours, charging, notification
+	  blinking and raw pin states for finding a board's colours.
+
 config ROCKCHIP_SUSPEND_MODE
 	tristate "Rockchip suspend mode config"
 	depends on ROCKCHIP_SIP
