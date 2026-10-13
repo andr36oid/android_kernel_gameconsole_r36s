@@ -26,6 +26,10 @@
  * The first colour of the table is what the LED shows at rest: "off", or
  * green on the genuine R36S.
  *
+ * Until the battery driver is up, the pins stay as the bootloader left them:
+ * boot.ini runs the DT's andr36oid,u-boot commands, which light clones from
+ * power-on.
+ *
  * Files in /sys/devices/platform/andr36oid-status-led/:
  *   colors (r)  names of the colours this LED can show
  *   table (rw)  "<name> <state per pin>; ..." replaces the colour table, for
@@ -97,6 +101,7 @@ struct status_led {
 
 	/* state */
 	int zone;		/* -1 until the first battery reading */
+	bool battery_seen;
 	int capacity, status;
 	struct show base;	/* what mode/battery/charger want */
 	const char *why;
@@ -276,9 +281,20 @@ static void evaluate(struct status_led *led)
 		  led->status == POWER_SUPPLY_STATUS_FULL ||
 		  led->status == POWER_SUPPLY_STATUS_NOT_CHARGING;
 
+	if (have_battery)
+		led->battery_seen = true;
 	if (have_battery && led->battery_mode)
 		led->zone = pick_zone(led);
 
+	if (!have_battery && !led->battery_seen) {
+		/*
+		 * The battery driver isn't up yet: leave the pins as the
+		 * bootloader set them (boot.ini lights clones), so the light
+		 * doesn't go off for a few seconds during the start.
+		 */
+		led->why = "waiting for the battery";
+		return;
+	}
 	if (plugged && led->status == POWER_SUPPLY_STATUS_FULL &&
 	    led->full.a != FOLLOW) {
 		led->base = led->full;
@@ -312,8 +328,12 @@ static void apply(struct status_led *led)
 	if (led->notify >= 0 && (led->suspended || !led->notify_off)) {
 		c = led->notify;
 	} else if (led->notify >= 0) {
-		/* phase 0: the notification colour, 1: what would show otherwise */
-		c = led->phase ? led->base.a : led->notify;
+		/*
+		 * phase 0: the notification colour, 1: what would show
+		 * otherwise, or the colour at rest if that's the same colour
+		 */
+		c = !led->phase ? led->notify :
+		    led->base.a != led->notify ? led->base.a : 0;
 		delay = led->phase ? led->notify_off : led->notify_on;
 	} else if (led->base.a != led->base.b && !led->suspended) {
 		c = led->phase ? led->base.b : led->base.a;
@@ -753,6 +773,8 @@ static ssize_t table_store(struct device *dev, struct device_attribute *attr,
 		ret = load_dt_table(led);
 	}
 	builtin_settings(led);
+	led->base.a = led->base.b = RELEASE;
+	led->why = "waiting for the battery";
 	led->shown = -1;
 	evaluate(led);
 	mutex_unlock(&led->lock);
