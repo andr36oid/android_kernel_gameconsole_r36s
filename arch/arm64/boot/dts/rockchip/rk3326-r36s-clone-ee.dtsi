@@ -113,18 +113,20 @@
 &leds {
 	/delete-node/ heartbeat;
 	/delete-node/ vibrator;
+};
 
-	charge-blue {
-		label = "blue:charge";
-		gpios = <&gpio0 RK_PA0 GPIO_ACTIVE_HIGH>;
-		linux,default-trigger = "battery-full";
-	};
-
-	charge-red {
-		label = "red:charge";
-		gpios = <&gpio0 RK_PC1 GPIO_ACTIVE_HIGH>;
-		linux,default-trigger = "battery-charging";
-	};
+/*
+ * Blue on GPIO0_A0, red on GPIO0_C1, both lit is purple, both floating is
+ * off (driving them low isn't). Was two gpio-leds on charging triggers.
+ */
+&status_led {
+	gpios = <&gpio0 RK_PA0 GPIO_ACTIVE_HIGH>, <&gpio0 RK_PC1 GPIO_ACTIVE_HIGH>;
+	color-names = "off", "blue", "red", "purple";
+	color-states = <2 2>, <1 2>, <2 1>, <1 1>;
+	andr36oid,battery = "11 off 0 red";
+	andr36oid,charging = "red";
+	andr36oid,full = "blue";
+	status = "okay";
 };
 
 &backlight {

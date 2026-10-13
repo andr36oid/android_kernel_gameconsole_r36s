@@ -304,6 +304,24 @@
 		};		
 	};
 
+	/*
+	 * Status LED (drivers/soc/rockchip/andr36oid_status_led.c), one state
+	 * per pin and colour: 0 low, 1 high, 2 floating. Genuine R36S: a red
+	 * LED on GPIO2_B5 next to the green one, which is always on, so "off"
+	 * is green. Colour tables from Raoni07's R36S LED Control. Enabled by
+	 * the DTs of the boards it is known for.
+	 */
+	status_led: andr36oid-status-led {
+		compatible = "andr36oid,status-led";
+		gpios = <&gpio2 RK_PB5 GPIO_ACTIVE_HIGH>;
+		color-names = "green", "red";
+		color-states = <0>, <1>;
+		andr36oid,battery = "11 green 0 red";
+		andr36oid,charging = "green";
+		andr36oid,mode = "battery";
+		status = "disabled";
+	};
+
 	backlight: backlight {
 		compatible = "pwm-backlight";
 		pwms = <&pwm1 0 62745 0>;

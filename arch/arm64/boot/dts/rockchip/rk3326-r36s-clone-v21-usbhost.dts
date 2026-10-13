@@ -60,3 +60,8 @@
 		};
 	};
 };
+
+/* the R36S status LED: a V21/V22 is an R36S board revision */
+&status_led {
+	status = "okay";
+};

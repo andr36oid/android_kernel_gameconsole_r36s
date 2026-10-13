@@ -235,3 +235,7 @@
 &uart1 {
 	status = "disabled";
 };
+
+&status_led {
+	status = "okay";
+};
