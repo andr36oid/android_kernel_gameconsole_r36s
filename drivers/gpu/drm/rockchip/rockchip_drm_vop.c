@@ -235,6 +235,12 @@ struct vop {
 	struct drm_tv_connector_state active_tv_state;
 	bool pre_overlay;
 	bool loader_protect;
+
+	/* black frame insertion (vop_bfi_*), all under irq_lock */
+	bool bfi_on;		/* frame start irq kept on for it */
+	bool bfi_shown;		/* dsp_black is set */
+	bool committing;	/* planes being written, cfg_done would show half of it */
+	u32 bfi_frame;
 	struct completion dsp_hold_completion;
 
 	/* protected by dev->event_lock */
@@ -492,6 +498,10 @@ static inline void vop_cfg_done(struct vop *vop)
 {
 	VOP_CTRL_SET(vop, cfg_done, 1);
 }
+
+/* black frame insertion, see vop_bfi_frame */
+static void vop_bfi_update(struct vop *vop);
+static void vop_fs_irq_set(struct vop *vop, bool on);
 
 static bool vop_is_allwin_disabled(struct vop *vop)
 {
@@ -1588,10 +1598,16 @@ static void vop_crtc_atomic_disable(struct drm_crtc *crtc,
 	struct vop *vop = to_vop(crtc);
 	int sys_status = drm_crtc_index(crtc) ?
 				SYS_STATUS_LCDC1 : SYS_STATUS_LCDC0;
+	unsigned long flags;
 
 	WARN_ON(vop->event);
 
 	vop_lock(vop);
+	spin_lock_irqsave(&vop->irq_lock, flags);
+	vop->bfi_on = false;
+	vop->bfi_shown = false;
+	VOP_CTRL_SET(vop, dsp_black, 0);
+	spin_unlock_irqrestore(&vop->irq_lock, flags);
 	VOP_CTRL_SET(vop, reg_done_frm, 1);
 	VOP_CTRL_SET(vop, dsp_interlace, 0);
 	drm_crtc_vblank_off(crtc);
@@ -2319,10 +2335,9 @@ static void vop_crtc_disable_vblank(struct drm_crtc *crtc)
 
 	spin_lock_irqsave(&vop->irq_lock, flags);
 
-	if (VOP_MAJOR(vop->version) == 3 && VOP_MINOR(vop->version) >= 7)
-		VOP_INTR_SET_TYPE(vop, enable, FS_FIELD_INTR, 0);
-	else
-		VOP_INTR_SET_TYPE(vop, enable, FS_INTR, 0);
+	/* black frame insertion needs every frame start */
+	if (!vop->bfi_on)
+		vop_fs_irq_set(vop, false);
 
 	spin_unlock_irqrestore(&vop->irq_lock, flags);
 }
@@ -2982,6 +2997,7 @@ static void vop_mcu_mode(struct drm_crtc *crtc)
 static void vop_crtc_atomic_enable(struct drm_crtc *crtc,
 				   struct drm_crtc_state *old_state)
 {
+	unsigned long flags;
 	struct vop *vop = to_vop(crtc);
 	struct rockchip_crtc_state *s = to_rockchip_crtc_state(crtc->state);
 	struct drm_display_mode *adjusted_mode = &crtc->state->adjusted_mode;
@@ -3148,6 +3164,14 @@ static void vop_crtc_atomic_enable(struct drm_crtc *crtc,
 	vop_cfg_done(vop);
 
 	drm_crtc_vblank_on(crtc);
+
+	spin_lock_irqsave(&vop->irq_lock, flags);
+	vop->committing = false;
+	vop->bfi_on = false;
+	vop->bfi_shown = false;
+	VOP_CTRL_SET(vop, dsp_black, 0);
+	vop_bfi_update(vop);
+	spin_unlock_irqrestore(&vop->irq_lock, flags);
 	vop_unlock(vop);
 }
 
@@ -3699,6 +3723,7 @@ static void vop_crtc_atomic_flush(struct drm_crtc *crtc,
 	spin_lock_irqsave(&vop->irq_lock, flags);
 	vop->pre_overlay = s->hdr.pre_overlay;
 	vop_cfg_done(vop);
+	vop->committing = false;
 	/*
 	 * rk322x and rk332x odd-even field will mistake when in interlace mode.
 	 * we must switch to frame effect before switch screen and switch to
@@ -3762,8 +3787,21 @@ static void vop_crtc_atomic_flush(struct drm_crtc *crtc,
 #endif
 }
 
+/* the planes are written next: no cfg_done from black frame insertion until flush */
+static void vop_crtc_atomic_begin(struct drm_crtc *crtc,
+				  struct drm_crtc_state *old_crtc_state)
+{
+	struct vop *vop = to_vop(crtc);
+	unsigned long flags;
+
+	spin_lock_irqsave(&vop->irq_lock, flags);
+	vop->committing = true;
+	spin_unlock_irqrestore(&vop->irq_lock, flags);
+}
+
 static const struct drm_crtc_helper_funcs vop_crtc_helper_funcs = {
 	.mode_fixup = vop_crtc_mode_fixup,
+	.atomic_begin = vop_crtc_atomic_begin,
 	.atomic_check = vop_crtc_atomic_check,
 	.atomic_flush = vop_crtc_atomic_flush,
 	.atomic_enable = vop_crtc_atomic_enable,
@@ -4020,6 +4058,145 @@ static void vop_handle_vblank(struct vop *vop)
 		drm_flip_work_commit(&vop->fb_unref_work, system_unbound_wq);
 }
 
+/*
+ * andr36oid: black frame insertion. In the black slots of a "normal:black" pattern the
+ * VOP scans out black (dsp_black) instead of the planes, switched at every frame start,
+ * so it keeps step with the panel without anything in Android drawing per frame.
+ * /sys/module/rockchipdrm/parameters/bfi: "1:1" .. "12:12", 0 is off. The register is
+ * only committed (cfg_done) while no plane update is half written; when one is, its own
+ * cfg_done takes the black bit along.
+ */
+#define VOP_BFI_MAX 12
+static DEFINE_MUTEX(vop_bfi_mutex);
+static struct vop *vop_bfi_vops[4];
+static unsigned int vop_bfi_normal, vop_bfi_black;
+
+/* irq_lock held */
+static void vop_fs_irq_set(struct vop *vop, bool on)
+{
+	if (VOP_MAJOR(vop->version) == 3 && VOP_MINOR(vop->version) >= 7) {
+		if (on)
+			VOP_INTR_SET_TYPE(vop, clear, FS_FIELD_INTR, 1);
+		VOP_INTR_SET_TYPE(vop, enable, FS_FIELD_INTR, on);
+	} else {
+		if (on)
+			VOP_INTR_SET_TYPE(vop, clear, FS_INTR, 1);
+		VOP_INTR_SET_TYPE(vop, enable, FS_INTR, on);
+	}
+}
+
+/* irq_lock held: drop the black, e.g. when it is turned off */
+static void vop_bfi_clear(struct vop *vop)
+{
+	if (!vop->bfi_shown)
+		return;
+	VOP_CTRL_SET(vop, dsp_black, 0);
+	vop->bfi_shown = false;
+	if (!vop->committing)
+		vop_cfg_done(vop);
+}
+
+/* frame start, irq_lock held */
+static void vop_bfi_frame(struct vop *vop)
+{
+	unsigned int n = READ_ONCE(vop_bfi_normal), b = READ_ONCE(vop_bfi_black);
+	bool black;
+
+	if (!vop->bfi_on || !n || !b)
+		return;
+	black = vop->bfi_frame++ % (n + b) >= n;
+	if (black == vop->bfi_shown)
+		return;
+	VOP_CTRL_SET(vop, dsp_black, black);
+	vop->bfi_shown = black;
+	if (!vop->committing)
+		vop_cfg_done(vop);
+}
+
+/* irq_lock held: start or stop it on an enabled VOP for the current pattern */
+static void vop_bfi_update(struct vop *vop)
+{
+	struct drm_crtc *crtc = &vop->crtc;
+	bool on = READ_ONCE(vop_bfi_normal) && READ_ONCE(vop_bfi_black);
+
+	vop->bfi_frame = 0;
+	if (on) {
+		vop_fs_irq_set(vop, true);
+	} else {
+		vop_bfi_clear(vop);
+		/* the irq stays on while DRM itself wants vblanks */
+		if (vop->bfi_on && !crtc->dev->vblank[drm_crtc_index(crtc)].enabled)
+			vop_fs_irq_set(vop, false);
+	}
+	vop->bfi_on = on;
+}
+
+static void vop_bfi_apply(struct vop *vop)
+{
+	unsigned long flags;
+
+	vop_lock(vop);
+	if (vop->is_enabled && pm_runtime_get_if_in_use(vop->dev) > 0) {
+		if (!vop_core_clks_enable(vop)) {
+			spin_lock_irqsave(&vop->irq_lock, flags);
+			vop_bfi_update(vop);
+			spin_unlock_irqrestore(&vop->irq_lock, flags);
+			vop_core_clks_disable(vop);
+		}
+		pm_runtime_put(vop->dev);
+	}
+	vop_unlock(vop);
+}
+
+static int vop_bfi_set(const char *val, const struct kernel_param *kp)
+{
+	unsigned int n = 0, b = 0, i;
+
+	if (sscanf(val, "%u:%u", &n, &b) != 2) {
+		if (kstrtouint(val, 0, &n) || n)
+			return -EINVAL;
+		b = 0;
+	}
+	if (n > VOP_BFI_MAX || b > VOP_BFI_MAX || !n != !b)
+		return -EINVAL;
+	mutex_lock(&vop_bfi_mutex);
+	WRITE_ONCE(vop_bfi_normal, n);
+	WRITE_ONCE(vop_bfi_black, b);
+	for (i = 0; i < ARRAY_SIZE(vop_bfi_vops); i++)
+		if (vop_bfi_vops[i])
+			vop_bfi_apply(vop_bfi_vops[i]);
+	mutex_unlock(&vop_bfi_mutex);
+	return 0;
+}
+
+static int vop_bfi_get(char *buf, const struct kernel_param *kp)
+{
+	return sprintf(buf, "%u:%u\n", READ_ONCE(vop_bfi_normal), READ_ONCE(vop_bfi_black));
+}
+
+static const struct kernel_param_ops vop_bfi_ops = {
+	.set = vop_bfi_set,
+	.get = vop_bfi_get,
+};
+module_param_cb(bfi, &vop_bfi_ops, NULL, 0644);
+MODULE_PARM_DESC(bfi, "black frame insertion, normal:black frames (1-12 each), 0 = off");
+
+static void vop_bfi_register(struct vop *vop, bool add)
+{
+	unsigned int i;
+
+	mutex_lock(&vop_bfi_mutex);
+	for (i = 0; i < ARRAY_SIZE(vop_bfi_vops); i++) {
+		if (add && !vop_bfi_vops[i]) {
+			vop_bfi_vops[i] = vop;
+			break;
+		}
+		if (!add && vop_bfi_vops[i] == vop)
+			vop_bfi_vops[i] = NULL;
+	}
+	mutex_unlock(&vop_bfi_mutex);
+}
+
 static irqreturn_t vop_isr(int irq, void *data)
 {
 	struct vop *vop = data;
@@ -4077,6 +4254,7 @@ static irqreturn_t vop_isr(int irq, void *data)
 		spin_lock_irqsave(&vop->irq_lock, flags);
 		VOP_CTRL_SET(vop, level2_overlay_en, vop->pre_overlay);
 		VOP_CTRL_SET(vop, alpha_hard_calc, vop->pre_overlay);
+		vop_bfi_frame(vop);
 		spin_unlock_irqrestore(&vop->irq_lock, flags);
 		drm_crtc_handle_vblank(crtc);
 		vop_handle_vblank(vop);
@@ -4705,6 +4883,7 @@ static int vop_bind(struct device *dev, struct device *master, void *data)
 						  "rockchip,dual-channel-swap");
 	vop->dual_channel_swap = dual_channel_swap;
 
+	vop_bfi_register(vop, true);
 	return 0;
 }
 
@@ -4712,6 +4891,7 @@ static void vop_unbind(struct device *dev, struct device *master, void *data)
 {
 	struct vop *vop = dev_get_drvdata(dev);
 
+	vop_bfi_register(vop, false);
 	device_remove_file(dev, &dev_attr_color_lut);
 	pm_runtime_disable(dev);
 	vop_destroy_crtc(vop);
