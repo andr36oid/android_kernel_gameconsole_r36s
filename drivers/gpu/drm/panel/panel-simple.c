@@ -3186,6 +3186,22 @@ static unsigned int panel_simple_mode_mhz(const struct drm_display_mode *m)
 }
 
 /*
+ * The native mode at another refresh rate, in milli-Hz: the pixel clock
+ * scaled (native clock * rate / native rate, the native rate exact), the
+ * porches the same. Not preferred.
+ */
+static void panel_simple_mode_at_rate(struct drm_display_mode *m,
+				      const struct drm_display_mode *native,
+				      unsigned int rate_mhz)
+{
+	drm_mode_copy(m, native);
+	m->type &= ~DRM_MODE_TYPE_PREFERRED;
+	m->vrefresh = 0;
+	m->clock = DIV_ROUND_CLOSEST_ULL((u64)native->htotal * native->vtotal *
+					 rate_mhz, 1000000);
+}
+
+/*
  * Add a mode per rate in extra_rates. The native mode stays first and
  * preferred; a rate within 0.1 Hz of a mode already offered is left out, so
  * 77.5 and 78 both stay but 60 next to a 60.05 Hz native mode does not.
@@ -3235,12 +3251,7 @@ static void panel_simple_of_add_extra_rates(struct device *dev,
 
 	for (i = 0; i < n; i++) {
 		m = &modes[num];
-		drm_mode_copy(m, &modes[0]);
-		m->type &= ~DRM_MODE_TYPE_PREFERRED;
-		m->vrefresh = 0;
-		/* native clock * rate / native rate, with the native rate exact */
-		m->clock = DIV_ROUND_CLOSEST_ULL((u64)m->htotal * m->vtotal *
-						 rates[i], 1000000);
+		panel_simple_mode_at_rate(m, &modes[0], rates[i]);
 
 		for (j = 0; j < num; j++)
 			if (abs((int)panel_simple_mode_mhz(&modes[j]) -
