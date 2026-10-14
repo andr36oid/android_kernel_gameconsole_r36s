@@ -1486,10 +1486,13 @@ static int fiq_debugger_probe(struct platform_device *pdev)
 			goto err_register_irq;
 		}
 
-		/* for irq-only mode, we want this irq to wake us up, if it
-		 * can.
+		/*
+		 * andr36oid: no wake-up from the debug UART. On EE clones (G80) its
+		 * receive line (UART5, GPIO3_A2) toggles by itself and woke the
+		 * console from deep sleep every second, and each wake-up is another
+		 * chance for the sleep hang. Typing on a serial cable still works
+		 * while the console is awake.
 		 */
-		enable_irq_wake(state->uart_irq);
 	}
 
 	if (state->signal_irq >= 0) {
