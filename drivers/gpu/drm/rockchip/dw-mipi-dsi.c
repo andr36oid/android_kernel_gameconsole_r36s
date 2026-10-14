@@ -8,6 +8,7 @@
  */
 
 #include <linux/clk.h>
+#include <linux/ctype.h>
 #include <linux/component.h>
 #include <linux/iopoll.h>
 #include <linux/math64.h>
@@ -15,9 +16,11 @@
 #include <linux/of_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
+#include <linux/workqueue.h>
 #include <linux/reset.h>
 #include <linux/mfd/syscon.h>
 #include <linux/phy/phy.h>
+#include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_crtc_helper.h>
@@ -282,6 +285,16 @@ struct dw_mipi_dsi {
 
 	const struct dw_mipi_dsi_plat_data *pdata;
 	struct rockchip_drm_sub_dev sub_dev;
+
+	/* a refresh rate tried for 5 seconds, see preview_rate_store() */
+	struct mutex preview_lock;
+	struct delayed_work preview_work;
+	struct drm_crtc *preview_crtc;
+	struct drm_property_blob *preview_blob;
+	struct drm_display_mode preview_orig;
+	unsigned long preview_next;	/* jiffies, no new preview before */
+	unsigned int preview_tries;
+	bool preview_running;
 };
 
 static inline struct dw_mipi_dsi *host_to_dsi(struct mipi_dsi_host *host)
@@ -1477,6 +1490,290 @@ static struct drm_connector_helper_funcs dw_mipi_dsi_connector_helper_funcs = {
 	.mode_valid = dw_mipi_dsi_connector_mode_valid,
 };
 
+/*
+ * Refresh rate preview: root writes a rate in Hz (up to three decimals) to
+ * preview_rate on this device, and the panel's own mode at that rate is shown
+ * for 5 seconds. Then the mode from before comes back, whatever userspace does
+ * meanwhile; the timer is here, not in userspace. Writing 0 brings it back at
+ * once. A new preview can start 2 seconds after the last one ended.
+ *
+ * The rate is set with a commit of our own that changes only the CRTC's mode,
+ * planes and everything else stay. The Rockchip HWC sends MODE_ID only when it
+ * changes the display config or switches the screen on or off, never with a
+ * frame, so it doesn't undo the preview. If it does set a mode meanwhile, its
+ * mode stays: that one is from the mode list, and the preview is over anyway.
+ */
+#define DSI_PREVIEW_MS			5000
+#define DSI_PREVIEW_COOLDOWN_MS		2000
+#define DSI_PREVIEW_RETRY_MS		1000
+#define DSI_PREVIEW_TRIES		5
+#define DSI_PREVIEW_MIN_MHZ		30000
+#define DSI_PREVIEW_MAX_MHZ		150000
+
+/* "77.5" -> 77500, in milli-Hz; 0 when it doesn't parse */
+static unsigned int dw_mipi_dsi_parse_mhz(const char *s)
+{
+	unsigned int hz = 0, frac = 0;
+	int digits = -1;
+
+	if (!isdigit(*s))
+		return 0;
+	for (; *s; s++) {
+		if (*s == '.' && digits < 0) {
+			digits = 0;
+			continue;
+		}
+		if (!isdigit(*s))
+			return 0;
+		if (digits < 0) {
+			hz = hz * 10 + (*s - '0');
+			if (hz > DSI_PREVIEW_MAX_MHZ / 1000)
+				return 0;
+		} else {
+			if (digits == 3)
+				return 0;
+			frac = frac * 10 + (*s - '0');
+			digits++;
+		}
+	}
+	for (; digits >= 0 && digits < 3; digits++)
+		frac *= 10;
+
+	return hz * 1000 + frac;
+}
+
+/* the panel's own mode; with all modeset locks held */
+static struct drm_display_mode *dw_mipi_dsi_native_mode(struct dw_mipi_dsi *dsi)
+{
+	struct drm_display_mode *m;
+
+	list_for_each_entry(m, &dsi->connector.modes, head)
+		if (m->type & DRM_MODE_TYPE_PREFERRED)
+			return m;
+
+	return NULL;
+}
+
+/* set a mode on the CRTC and keep everything else; with all modeset locks held */
+static int dw_mipi_dsi_commit_mode(struct dw_mipi_dsi *dsi,
+				   struct drm_crtc *crtc,
+				   const struct drm_display_mode *mode)
+{
+	struct drm_device *drm = dsi->connector.dev;
+	struct drm_atomic_state *state;
+	struct drm_crtc_state *crtc_state;
+	int ret;
+
+	state = drm_atomic_state_alloc(drm);
+	if (!state)
+		return -ENOMEM;
+	state->acquire_ctx = drm->mode_config.acquire_ctx;
+
+	crtc_state = drm_atomic_get_crtc_state(state, crtc);
+	if (IS_ERR(crtc_state)) {
+		ret = PTR_ERR(crtc_state);
+		goto out;
+	}
+	ret = drm_atomic_set_mode_for_crtc(crtc_state, mode);
+	if (ret)
+		goto out;
+	ret = drm_atomic_add_affected_connectors(state, crtc);
+	if (ret)
+		goto out;
+	ret = drm_atomic_add_affected_planes(state, crtc);
+	if (ret)
+		goto out;
+
+	ret = drm_atomic_commit(state);
+out:
+	drm_atomic_state_put(state);
+	return ret;
+}
+
+static unsigned int dw_mipi_dsi_mode_mhz(const struct drm_display_mode *m)
+{
+	if (!m->htotal || !m->vtotal)
+		return 0;
+
+	return DIV_ROUND_CLOSEST_ULL((u64)m->clock * 1000000,
+				     m->htotal * m->vtotal);
+}
+
+static void dw_mipi_dsi_preview_end(struct dw_mipi_dsi *dsi)
+{
+	drm_property_blob_put(dsi->preview_blob);
+	dsi->preview_blob = NULL;
+	dsi->preview_crtc = NULL;
+	dsi->preview_running = false;
+	dsi->preview_next = jiffies + msecs_to_jiffies(DSI_PREVIEW_COOLDOWN_MS);
+}
+
+static void dw_mipi_dsi_preview_restore(struct work_struct *work)
+{
+	struct dw_mipi_dsi *dsi = container_of(to_delayed_work(work),
+					       struct dw_mipi_dsi, preview_work);
+	struct drm_device *drm = dsi->connector.dev;
+	struct drm_display_mode *native;
+	struct drm_crtc *crtc;
+	unsigned int mhz;
+	int ret;
+
+	mutex_lock(&dsi->preview_lock);
+	if (!dsi->preview_running)
+		goto unlock;
+
+	drm_modeset_lock_all(drm);
+	crtc = dsi->preview_crtc;
+	if (crtc->state->mode_blob != dsi->preview_blob) {
+		/* screen off, or the HWC set a mode from its list meanwhile */
+		pr_info("dw-mipi-dsi: preview over, the mode was changed meanwhile, nothing to restore\n");
+		goto done;
+	}
+
+	mhz = dw_mipi_dsi_mode_mhz(&dsi->preview_orig);
+	ret = dw_mipi_dsi_commit_mode(dsi, crtc, &dsi->preview_orig);
+	if (ret) {
+		pr_err("dw-mipi-dsi: preview restore to %u.%03u Hz failed (%d), trying the panel's own mode\n",
+		       mhz / 1000, mhz % 1000, ret);
+		native = dw_mipi_dsi_native_mode(dsi);
+		ret = native ? dw_mipi_dsi_commit_mode(dsi, crtc, native) : -ENOENT;
+		if (!ret)
+			mhz = dw_mipi_dsi_mode_mhz(native);
+	}
+	if (ret) {
+		if (++dsi->preview_tries < DSI_PREVIEW_TRIES) {
+			pr_err("dw-mipi-dsi: preview restore failed (%d), again in 1 s\n",
+			       ret);
+			drm_modeset_unlock_all(drm);
+			schedule_delayed_work(&dsi->preview_work,
+					msecs_to_jiffies(DSI_PREVIEW_RETRY_MS));
+			goto unlock;
+		}
+		pr_err("dw-mipi-dsi: preview restore failed (%d), giving up\n",
+		       ret);
+		goto done;
+	}
+	pr_info("dw-mipi-dsi: preview over, back to %u.%03u Hz\n",
+		mhz / 1000, mhz % 1000);
+done:
+	dw_mipi_dsi_preview_end(dsi);
+	drm_modeset_unlock_all(drm);
+unlock:
+	mutex_unlock(&dsi->preview_lock);
+}
+
+static int dw_mipi_dsi_preview_start(struct dw_mipi_dsi *dsi,
+				     unsigned int rate_mhz)
+{
+	struct drm_device *drm = dsi->connector.dev;
+	struct drm_connector_state *conn_state;
+	struct drm_property_blob *orig_blob;
+	struct drm_display_mode *native;
+	struct drm_display_mode mode = {};
+	struct drm_crtc *crtc;
+	unsigned int orig_mhz;
+	int ret;
+
+	mutex_lock(&dsi->preview_lock);
+	if (dsi->preview_running || time_before(jiffies, dsi->preview_next)) {
+		ret = -EBUSY;
+		goto unlock;
+	}
+
+	drm_modeset_lock_all(drm);
+	conn_state = dsi->connector.state;
+	crtc = conn_state ? conn_state->crtc : NULL;
+	if (!crtc || !crtc->state->active || !crtc->state->mode_blob) {
+		ret = -ENODEV;
+		goto unlock_all;
+	}
+	native = dw_mipi_dsi_native_mode(dsi);
+	if (!native || !native->htotal || !native->vtotal) {
+		ret = -ENODEV;
+		goto unlock_all;
+	}
+
+	/* as panel-simple builds its extra rates: the clock scaled, porches kept */
+	drm_mode_copy(&mode, native);
+	mode.type = DRM_MODE_TYPE_DRIVER;
+	mode.clock = DIV_ROUND_CLOSEST_ULL((u64)native->htotal * native->vtotal *
+					   rate_mhz, 1000000);
+	mode.vrefresh = 0;
+	mode.vrefresh = drm_mode_vrefresh(&mode);
+	if (dw_mipi_dsi_connector_mode_valid(&dsi->connector, &mode) != MODE_OK) {
+		pr_info("dw-mipi-dsi: preview of %u.%03u Hz refused, the DSI lanes can't carry %d kHz\n",
+			rate_mhz / 1000, rate_mhz % 1000, mode.clock);
+		ret = -ERANGE;
+		goto unlock_all;
+	}
+
+	drm_mode_copy(&dsi->preview_orig, &crtc->state->mode);
+	orig_mhz = dw_mipi_dsi_mode_mhz(&dsi->preview_orig);
+	orig_blob = crtc->state->mode_blob;
+
+	ret = dw_mipi_dsi_commit_mode(dsi, crtc, &mode);
+	if (ret) {
+		pr_info("dw-mipi-dsi: preview of %u.%03u Hz failed (%d)\n",
+			rate_mhz / 1000, rate_mhz % 1000, ret);
+		/* a failed commit changes nothing, but make sure */
+		if (crtc->state->mode_blob != orig_blob)
+			dw_mipi_dsi_commit_mode(dsi, crtc, &dsi->preview_orig);
+		goto unlock_all;
+	}
+
+	dsi->preview_crtc = crtc;
+	dsi->preview_blob = drm_property_blob_get(crtc->state->mode_blob);
+	dsi->preview_tries = 0;
+	dsi->preview_running = true;
+	schedule_delayed_work(&dsi->preview_work,
+			      msecs_to_jiffies(DSI_PREVIEW_MS));
+	pr_info("dw-mipi-dsi: previewing %u.%03u Hz (%d kHz) for 5 s, then back to %u.%03u Hz\n",
+		rate_mhz / 1000, rate_mhz % 1000, mode.clock,
+		orig_mhz / 1000, orig_mhz % 1000);
+
+unlock_all:
+	drm_modeset_unlock_all(drm);
+unlock:
+	mutex_unlock(&dsi->preview_lock);
+	return ret;
+}
+
+/* write-only, root only: a rate in Hz like 77.5 to preview, 0 to end it now */
+static ssize_t preview_rate_store(struct device *dev,
+				  struct device_attribute *attr,
+				  const char *buf, size_t count)
+{
+	struct dw_mipi_dsi *dsi = dev_get_drvdata(dev);
+	unsigned int mhz;
+	bool running;
+	char tmp[16];
+	int ret;
+
+	if (sysfs_streq(buf, "0")) {
+		mutex_lock(&dsi->preview_lock);
+		running = dsi->preview_running;
+		if (running)
+			mod_delayed_work(system_wq, &dsi->preview_work, 0);
+		mutex_unlock(&dsi->preview_lock);
+		if (running)
+			flush_delayed_work(&dsi->preview_work);
+		return count;
+	}
+
+	if (count >= sizeof(tmp))
+		return -EINVAL;
+	memcpy(tmp, buf, count);
+	tmp[count] = '\0';
+	mhz = dw_mipi_dsi_parse_mhz(strim(tmp));
+	if (mhz < DSI_PREVIEW_MIN_MHZ || mhz > DSI_PREVIEW_MAX_MHZ)
+		return -EINVAL;
+
+	ret = dw_mipi_dsi_preview_start(dsi, mhz);
+
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_WO(preview_rate);
+
 static void dw_mipi_dsi_drm_connector_destroy(struct drm_connector *connector)
 {
 	drm_connector_unregister(connector);
@@ -1585,6 +1882,9 @@ static int dw_mipi_dsi_bind(struct device *dev, struct device *master,
 		dsi->sub_dev.connector = &dsi->connector;
 		dsi->sub_dev.of_node = dev->of_node;
 		rockchip_drm_register_sub_dev(&dsi->sub_dev);
+
+		if (device_create_file(dev, &dev_attr_preview_rate))
+			DRM_DEV_ERROR(dev, "Failed to add preview_rate\n");
 	} else {
 		dsi->bridge->driver_private = &dsi->host;
 		dsi->bridge->encoder = encoder;
@@ -1615,6 +1915,12 @@ static void dw_mipi_dsi_unbind(struct device *dev, struct device *master,
 {
 	struct dw_mipi_dsi *dsi = dev_get_drvdata(dev);
 
+	if (dsi->panel) {
+		device_remove_file(dev, &dev_attr_preview_rate);
+		cancel_delayed_work_sync(&dsi->preview_work);
+		if (dsi->preview_running)
+			dw_mipi_dsi_preview_end(dsi);
+	}
 	if (dsi->sub_dev.connector)
 		rockchip_drm_unregister_sub_dev(&dsi->sub_dev);
 	pm_runtime_disable(dsi->dev);
@@ -1729,6 +2035,9 @@ static int dw_mipi_dsi_probe(struct platform_device *pdev)
 	dsi->dev = dev;
 	dsi->id = id;
 	dsi->pdata = of_device_get_match_data(dev);
+	mutex_init(&dsi->preview_lock);
+	INIT_DELAYED_WORK(&dsi->preview_work, dw_mipi_dsi_preview_restore);
+	dsi->preview_next = jiffies;
 	platform_set_drvdata(pdev, dsi);
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
