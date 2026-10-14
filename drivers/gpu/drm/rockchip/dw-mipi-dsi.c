@@ -1100,6 +1100,29 @@ static void dw_mipi_dsi_vop_routing(struct dw_mipi_dsi *dsi)
 		grf_field_write(dsi->slave, VOPSEL, pipe);
 }
 
+/* lane rate in bit/s a pixel clock in kHz needs */
+static u64 dw_mipi_dsi_clock_to_lane_rate(struct dw_mipi_dsi *dsi, int clock)
+{
+	int bpp, lanes;
+	u64 tmp;
+
+	bpp = mipi_dsi_pixel_format_to_bpp(dsi->format);
+	if (bpp < 0)
+		bpp = 24;
+
+	lanes = dsi->slave ? dsi->lanes * 2 : dsi->lanes;
+	if (lanes < 1)
+		lanes = 1;
+	tmp = (u64)clock * 1000 * bpp;
+	do_div(tmp, lanes);
+
+	/* take 1 / 0.9, since mbps must big than bandwidth of RGB */
+	tmp *= 10;
+	do_div(tmp, 9);
+
+	return tmp;
+}
+
 static unsigned long dw_mipi_dsi_get_lane_rate(struct dw_mipi_dsi *dsi)
 {
 	struct device *dev = dsi->dev;
@@ -1107,24 +1130,13 @@ static unsigned long dw_mipi_dsi_get_lane_rate(struct dw_mipi_dsi *dsi)
 	unsigned long max_lane_rate = dsi->pdata->max_bit_rate_per_lane;
 	unsigned long lane_rate;
 	unsigned int value;
-	int bpp, lanes;
 	u64 tmp;
 
 	/* optional override of the desired bandwidth */
 	if (!of_property_read_u32(dev->of_node, "rockchip,lane-rate", &value))
 		return value * USEC_PER_SEC;
 
-	bpp = mipi_dsi_pixel_format_to_bpp(dsi->format);
-	if (bpp < 0)
-		bpp = 24;
-
-	lanes = dsi->slave ? dsi->lanes * 2 : dsi->lanes;
-	tmp = (u64)mode->crtc_clock * 1000 * bpp;
-	do_div(tmp, lanes);
-
-	/* take 1 / 0.9, since mbps must big than bandwidth of RGB */
-	tmp *= 10;
-	do_div(tmp, 9);
+	tmp = dw_mipi_dsi_clock_to_lane_rate(dsi, mode->crtc_clock);
 
 	if (tmp > max_lane_rate)
 		lane_rate = max_lane_rate;
@@ -1435,8 +1447,30 @@ static int dw_mipi_dsi_connector_get_modes(struct drm_connector *connector)
 	return drm_panel_get_modes(dsi->panel);
 }
 
+/*
+ * Leave out modes that need a faster link than the lanes can run, such as
+ * extra refresh rates asked for on the command line. The lane rate would be
+ * capped and the panel would get a broken picture.
+ */
+static enum drm_mode_status
+dw_mipi_dsi_connector_mode_valid(struct drm_connector *connector,
+				 struct drm_display_mode *mode)
+{
+	struct dw_mipi_dsi *dsi = con_to_dsi(connector);
+
+	if (of_property_read_bool(dsi->dev->of_node, "rockchip,lane-rate"))
+		return MODE_OK;
+
+	if (dw_mipi_dsi_clock_to_lane_rate(dsi, mode->clock) >
+	    dsi->pdata->max_bit_rate_per_lane)
+		return MODE_CLOCK_HIGH;
+
+	return MODE_OK;
+}
+
 static struct drm_connector_helper_funcs dw_mipi_dsi_connector_helper_funcs = {
 	.get_modes = dw_mipi_dsi_connector_get_modes,
+	.mode_valid = dw_mipi_dsi_connector_mode_valid,
 };
 
 static void dw_mipi_dsi_drm_connector_destroy(struct drm_connector *connector)

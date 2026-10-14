@@ -22,6 +22,7 @@
  */
 
 #include <linux/backlight.h>
+#include <linux/ctype.h>
 #include <linux/gpio/consumer.h>
 #include <linux/module.h>
 #include <linux/of_platform.h>
@@ -3128,6 +3129,136 @@ out:
 	display_timings_release(disp);
 }
 
+/*
+ * Extra refresh rates to try, from the kernel command line, for example
+ * panel_simple.extra_rates=70,77.5,90 (Hz, up to three decimals). Each one
+ * becomes a copy of the native mode with the pixel clock scaled to that rate;
+ * the porches stay the same. Whether the panel copes is up to the panel, the
+ * DSI host leaves out modes its link can't carry.
+ */
+static char *extra_rates;
+module_param(extra_rates, charp, 0444);
+MODULE_PARM_DESC(extra_rates, "Extra refresh rates in Hz to offer, comma separated");
+
+#define PANEL_SIMPLE_MAX_EXTRA_RATES	16
+#define PANEL_SIMPLE_MIN_EXTRA_MHZ	30000
+#define PANEL_SIMPLE_MAX_EXTRA_MHZ	150000
+
+/* "77.5" -> 77500, in milli-Hz; 0 when it doesn't parse */
+static unsigned int panel_simple_parse_mhz(const char *s)
+{
+	unsigned int hz = 0, frac = 0;
+	int digits = -1;
+
+	if (!isdigit(*s))
+		return 0;
+	for (; *s; s++) {
+		if (*s == '.' && digits < 0) {
+			digits = 0;
+			continue;
+		}
+		if (!isdigit(*s))
+			return 0;
+		if (digits < 0) {
+			hz = hz * 10 + (*s - '0');
+			if (hz > PANEL_SIMPLE_MAX_EXTRA_MHZ / 1000)
+				return 0;
+		} else {
+			if (digits == 3)
+				return 0;
+			frac = frac * 10 + (*s - '0');
+			digits++;
+		}
+	}
+	for (; digits >= 0 && digits < 3; digits++)
+		frac *= 10;
+
+	return hz * 1000 + frac;
+}
+
+static unsigned int panel_simple_mode_mhz(const struct drm_display_mode *m)
+{
+	if (!m->htotal || !m->vtotal)
+		return 0;
+
+	return DIV_ROUND_CLOSEST_ULL((u64)m->clock * 1000000,
+				     m->htotal * m->vtotal);
+}
+
+/*
+ * Add a mode per rate in extra_rates. The native mode stays first and
+ * preferred; a rate within 0.1 Hz of a mode already offered is left out, so
+ * 77.5 and 78 both stay but 60 next to a 60.05 Hz native mode does not.
+ */
+static void panel_simple_of_add_extra_rates(struct device *dev,
+					    struct panel_desc *desc)
+{
+	unsigned int rates[PANEL_SIMPLE_MAX_EXTRA_RATES];
+	struct drm_display_mode *modes, *m;
+	unsigned int i, j, n = 0, num = desc->num_modes;
+	char *buf, *p, *tok;
+
+	if (!extra_rates || !*extra_rates || !num)
+		return;
+	if (!desc->modes[0].htotal || !desc->modes[0].vtotal)
+		return;
+
+	buf = kstrdup(extra_rates, GFP_KERNEL);
+	if (!buf)
+		return;
+	p = buf;
+	while ((tok = strsep(&p, ",")) && n < ARRAY_SIZE(rates)) {
+		unsigned int mhz;
+
+		tok = strim(tok);
+		if (!*tok)
+			continue;
+		mhz = panel_simple_parse_mhz(tok);
+		if (mhz < PANEL_SIMPLE_MIN_EXTRA_MHZ ||
+		    mhz > PANEL_SIMPLE_MAX_EXTRA_MHZ) {
+			dev_warn(dev, "extra rate '%s' left out, use 30 to 150 Hz\n",
+				 tok);
+			continue;
+		}
+		rates[n++] = mhz;
+	}
+	kfree(buf);
+	if (!n)
+		return;
+
+	modes = devm_kcalloc(dev, num + n, sizeof(*modes), GFP_KERNEL);
+	if (!modes)
+		return;
+	for (i = 0; i < num; i++)
+		drm_mode_copy(&modes[i], &desc->modes[i]);
+	modes[0].type |= DRM_MODE_TYPE_PREFERRED;
+
+	for (i = 0; i < n; i++) {
+		m = &modes[num];
+		drm_mode_copy(m, &modes[0]);
+		m->type &= ~DRM_MODE_TYPE_PREFERRED;
+		m->vrefresh = 0;
+		/* native clock * rate / native rate, with the native rate exact */
+		m->clock = DIV_ROUND_CLOSEST_ULL((u64)m->htotal * m->vtotal *
+						 rates[i], 1000000);
+
+		for (j = 0; j < num; j++)
+			if (abs((int)panel_simple_mode_mhz(&modes[j]) -
+				(int)panel_simple_mode_mhz(m)) < 100)
+				break;
+		if (j < num)
+			continue;
+
+		dev_info(dev, "extra mode %ux%u at %u.%03u Hz, %d kHz\n",
+			 m->hdisplay, m->vdisplay, panel_simple_mode_mhz(m) / 1000,
+			 panel_simple_mode_mhz(m) % 1000, m->clock);
+		num++;
+	}
+
+	desc->modes = modes;
+	desc->num_modes = num;
+}
+
 static int panel_simple_of_get_desc_data(struct device *dev,
 					 struct panel_desc *desc)
 {
@@ -3149,6 +3280,7 @@ static int panel_simple_of_get_desc_data(struct device *dev,
 		desc->bus_flags = bus_flags;
 
 		panel_simple_of_get_more_modes(dev, desc);
+		panel_simple_of_add_extra_rates(dev, desc);
 
 		of_property_read_u32(np, "bpc", &desc->bpc);
 		of_property_read_u32(np, "bus-format", &desc->bus_format);
