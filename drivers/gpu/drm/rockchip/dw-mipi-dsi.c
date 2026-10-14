@@ -2145,9 +2145,34 @@ static int __maybe_unused dw_mipi_dsi_runtime_resume(struct device *dev)
 	return 0;
 }
 
+/*
+ * A refresh rate preview still running when the console goes to sleep is
+ * ended now, before any device sleeps: its restore is a modeset, and run
+ * later it would hit the VOP and DSI with their power domain off.
+ */
+static int __maybe_unused dw_mipi_dsi_prepare(struct device *dev)
+{
+	struct dw_mipi_dsi *dsi = dev_get_drvdata(dev);
+	bool running;
+
+	if (!dsi)
+		return 0;
+	mutex_lock(&dsi->preview_lock);
+	running = dsi->preview_running;
+	if (running)
+		mod_delayed_work(system_wq, &dsi->preview_work, 0);
+	mutex_unlock(&dsi->preview_lock);
+	if (running)
+		flush_delayed_work(&dsi->preview_work);
+	return 0;
+}
+
 static const struct dev_pm_ops dw_mipi_dsi_pm_ops = {
 	SET_RUNTIME_PM_OPS(dw_mipi_dsi_runtime_suspend,
 			   dw_mipi_dsi_runtime_resume, NULL)
+#ifdef CONFIG_PM_SLEEP
+	.prepare = dw_mipi_dsi_prepare,
+#endif
 };
 
 static const u32 px30_dsi_grf_reg_fields[MAX_FIELDS] = {
