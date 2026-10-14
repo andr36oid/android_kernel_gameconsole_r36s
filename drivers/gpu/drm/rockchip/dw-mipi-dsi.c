@@ -1461,6 +1461,10 @@ dw_mipi_dsi_connector_mode_valid(struct drm_connector *connector,
 	if (of_property_read_bool(dsi->dev->of_node, "rockchip,lane-rate"))
 		return MODE_OK;
 
+	/* the panel's own mode always stays: it worked capped before */
+	if (mode->type & DRM_MODE_TYPE_PREFERRED)
+		return MODE_OK;
+
 	if (dw_mipi_dsi_clock_to_lane_rate(dsi, mode->clock) >
 	    dsi->pdata->max_bit_rate_per_lane)
 		return MODE_CLOCK_HIGH;
