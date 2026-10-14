@@ -46,6 +46,8 @@
 &joypad {
 	switch-rxy;
 	invert-absry;
+	/* no Fn button (handhelds.wiki); Android offers a stand-in */
+	andr36oid,missing-buttons = "fn";
 };
 
 &dsi {

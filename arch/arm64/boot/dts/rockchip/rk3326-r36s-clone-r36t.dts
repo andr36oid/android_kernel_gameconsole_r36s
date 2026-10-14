@@ -64,3 +64,8 @@
 		zero_algorithm_vol = <3850>;
 	};
 };
+
+&joypad {
+	/* one analog stick only (handhelds.wiki) */
+	andr36oid,missing-buttons = "r3";
+};

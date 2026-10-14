@@ -109,3 +109,8 @@
 		zero_algorithm_vol = <3850>;
 	};
 };
+
+&joypad {
+	/* no analog sticks, so no stick clicks (handhelds.wiki) */
+	andr36oid,missing-buttons = "l3", "r3";
+};

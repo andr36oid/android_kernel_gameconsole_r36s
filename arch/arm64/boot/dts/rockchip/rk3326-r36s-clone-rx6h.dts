@@ -20,6 +20,8 @@
 	/delete-property/ invert-absy;
 	invert-absrx;
 	invert-absry;
+	/* no Fn button (handhelds.wiki); Android offers a stand-in */
+	andr36oid,missing-buttons = "fn";
 };
 
 &rk817 {
