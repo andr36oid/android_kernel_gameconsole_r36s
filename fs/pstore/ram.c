@@ -39,22 +39,57 @@
 #define RAMOOPS_KERNMSG_HDR "===="
 #define MIN_MEM_SIZE 4096UL
 
+/*
+ * The sizes from the command line (ramoops.record_size= and so on) win over the
+ * ones in the device tree. The DT stays the default: a size that isn't given
+ * there keeps the DT's.
+ */
+static bool record_size_set, console_size_set, ftrace_size_set, pmsg_size_set;
+
 static ulong record_size = MIN_MEM_SIZE;
-module_param(record_size, ulong, 0400);
+static ulong ramoops_console_size = MIN_MEM_SIZE;
+static ulong ramoops_ftrace_size = MIN_MEM_SIZE;
+static ulong ramoops_pmsg_size = MIN_MEM_SIZE;
+
+static int ramoops_set_size(const char *val, const struct kernel_param *kp)
+{
+	int ret = param_set_ulong(val, kp);
+
+	if (ret)
+		return ret;
+	if (kp->arg == &record_size)
+		record_size_set = true;
+	else if (kp->arg == &ramoops_console_size)
+		console_size_set = true;
+	else if (kp->arg == &ramoops_ftrace_size)
+		ftrace_size_set = true;
+	else if (kp->arg == &ramoops_pmsg_size)
+		pmsg_size_set = true;
+	return 0;
+}
+
+static const struct kernel_param_ops ramoops_size_ops = {
+	.set = ramoops_set_size,
+	.get = param_get_ulong,
+};
+
+module_param_cb(record_size, &ramoops_size_ops, &record_size, 0400);
 MODULE_PARM_DESC(record_size,
 		"size of each dump done on oops/panic");
 
-static ulong ramoops_console_size = MIN_MEM_SIZE;
-module_param_named(console_size, ramoops_console_size, ulong, 0400);
+module_param_cb(console_size, &ramoops_size_ops, &ramoops_console_size, 0400);
 MODULE_PARM_DESC(console_size, "size of kernel console log");
 
-static ulong ramoops_ftrace_size = MIN_MEM_SIZE;
-module_param_named(ftrace_size, ramoops_ftrace_size, ulong, 0400);
+module_param_cb(ftrace_size, &ramoops_size_ops, &ramoops_ftrace_size, 0400);
 MODULE_PARM_DESC(ftrace_size, "size of ftrace log");
 
-static ulong ramoops_pmsg_size = MIN_MEM_SIZE;
-module_param_named(pmsg_size, ramoops_pmsg_size, ulong, 0400);
+module_param_cb(pmsg_size, &ramoops_size_ops, &ramoops_pmsg_size, 0400);
 MODULE_PARM_DESC(pmsg_size, "size of user space message log");
+
+/* ramoops.disable=1: don't use the area at all, there are no saved logs */
+static bool ramoops_disable;
+module_param_named(disable, ramoops_disable, bool, 0400);
+MODULE_PARM_DESC(disable, "set to 1 to not use the ramoops area (default 0)");
 
 static unsigned long long mem_address;
 module_param_hw(mem_address, ullong, other, 0400);
@@ -96,6 +131,8 @@ struct ramoops_context {
 	size_t ftrace_size;
 	size_t pmsg_size;
 	int dump_oops;
+	/* an oops or panic was kept this start: restart dumps leave it alone */
+	bool crash_kept;
 	u32 flags;
 	struct persistent_ram_ecc_info ecc_info;
 	unsigned int max_dump_cnt;
@@ -412,16 +449,25 @@ static int notrace ramoops_pstore_write(struct pstore_record *record)
 		return -EINVAL;
 
 	/*
-	 * Out of the various dmesg dump types, ramoops is currently designed
-	 * to only store crash logs, rather than storing general kernel logs.
+	 * Restart, halt and emergency dumps only come with
+	 * printk.always_kmsg_dump=Y: they keep the log of a start that ended
+	 * without a crash. They never replace a crash record of this start
+	 * (a panic is followed by an emergency restart).
 	 */
 	if (record->reason != KMSG_DUMP_OOPS &&
-	    record->reason != KMSG_DUMP_PANIC)
+	    record->reason != KMSG_DUMP_PANIC && cxt->crash_kept)
 		return -EINVAL;
 
-	/* Skip Oopes when configured to do so. */
-	if (record->reason == KMSG_DUMP_OOPS && !cxt->dump_oops)
+	/*
+	 * Skip Oopses when configured to do so. The module parameter, so that
+	 * /sys/module/ramoops/parameters/dump_oops works while running.
+	 */
+	if (record->reason == KMSG_DUMP_OOPS && !READ_ONCE(dump_oops))
 		return -EINVAL;
+
+	if (record->reason == KMSG_DUMP_OOPS ||
+	    record->reason == KMSG_DUMP_PANIC)
+		cxt->crash_kept = true;
 
 	/*
 	 * Explicitly only take the first part of any new crash.
@@ -723,6 +769,54 @@ static int ramoops_parse_dt(struct platform_device *pdev,
 	return 0;
 }
 
+/* rounddown_pow_of_two() as the probe does it, 0 stays 0 */
+static unsigned long ramoops_pow2(unsigned long size)
+{
+	return size && !is_power_of_2(size) ? rounddown_pow_of_two(size) : size;
+}
+
+/*
+ * The sizes given on the command line instead of the DT's, when they fit in
+ * the area together; otherwise the DT's stay.
+ */
+static void ramoops_cmdline_sizes(struct platform_device *pdev,
+				  struct ramoops_platform_data *pdata)
+{
+	unsigned long rec, con, ftr, pms, rest;
+
+	if (!record_size_set && !console_size_set && !ftrace_size_set &&
+	    !pmsg_size_set)
+		return;
+
+	rec = ramoops_pow2(record_size_set ? record_size : pdata->record_size);
+	con = ramoops_pow2(console_size_set ? ramoops_console_size :
+			   pdata->console_size);
+	ftr = ramoops_pow2(ftrace_size_set ? ramoops_ftrace_size :
+			   pdata->ftrace_size);
+	pms = ramoops_pow2(pmsg_size_set ? ramoops_pmsg_size :
+			   pdata->pmsg_size);
+
+	if (con > pdata->mem_size || ftr > pdata->mem_size - con ||
+	    pms > pdata->mem_size - con - ftr) {
+		dev_warn(&pdev->dev, "command line sizes don't fit in 0x%lx, using the device tree's\n",
+			 pdata->mem_size);
+		return;
+	}
+	rest = pdata->mem_size - con - ftr - pms;
+	if (rec > rest || (!rec && !con && !ftr && !pms)) {
+		dev_warn(&pdev->dev, "command line sizes don't fit in 0x%lx, using the device tree's\n",
+			 pdata->mem_size);
+		return;
+	}
+
+	pdata->record_size = rec;
+	pdata->console_size = con;
+	pdata->ftrace_size = ftr;
+	pdata->pmsg_size = pms;
+	dev_info(&pdev->dev, "sizes from the command line: record 0x%lx, console 0x%lx, ftrace 0x%lx, pmsg 0x%lx\n",
+		 rec, con, ftr, pms);
+}
+
 static int ramoops_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -740,6 +834,7 @@ static int ramoops_probe(struct platform_device *pdev)
 		err = ramoops_parse_dt(pdev, pdata);
 		if (err < 0)
 			goto fail_out;
+		ramoops_cmdline_sizes(pdev, pdata);
 	}
 
 	/*
@@ -974,6 +1069,11 @@ static int __init ramoops_init(void)
 {
 	int ret;
 
+	if (ramoops_disable) {
+		pr_info("turned off on the command line (ramoops.disable=1)\n");
+		return 0;
+	}
+
 	ramoops_register_dummy();
 	ret = platform_driver_register(&ramoops_driver);
 	if (ret != 0)
@@ -985,6 +1085,8 @@ postcore_initcall(ramoops_init);
 
 static void __exit ramoops_exit(void)
 {
+	if (ramoops_disable)
+		return;
 	platform_driver_unregister(&ramoops_driver);
 	ramoops_unregister_dummy();
 }
