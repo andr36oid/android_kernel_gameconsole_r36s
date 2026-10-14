@@ -37,6 +37,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/reset.h>
+#include <linux/suspend.h>
 #include <linux/syscore_ops.h>
 
 #define WDT_CR		0x00
@@ -186,6 +187,26 @@ static int sleep_wdt_kick_cb(struct device *dev)
 	return 0;
 }
 
+/*
+ * Light sleep (s2idle) never reaches syscore and can last any time, so there
+ * it stops with the last device step and starts again with the first one.
+ */
+static int sleep_wdt_suspend_noirq(struct device *dev)
+{
+	if (pm_suspend_target_state == PM_SUSPEND_TO_IDLE)
+		sleep_wdt_disarm();
+	else
+		sleep_wdt_kick();
+	return 0;
+}
+
+static int sleep_wdt_resume_noirq(struct device *dev)
+{
+	sleep_wdt_arm();
+	sleep_wdt_kick();
+	return 0;
+}
+
 /* the last step before the firmware, and the first one after it */
 static int sleep_wdt_syscore_suspend(void)
 {
@@ -212,8 +233,8 @@ static const struct dev_pm_ops sleep_wdt_pm_ops = {
 	.prepare	= sleep_wdt_prepare,
 	.suspend	= sleep_wdt_kick_cb,
 	.suspend_late	= sleep_wdt_kick_cb,
-	.suspend_noirq	= sleep_wdt_kick_cb,
-	.resume_noirq	= sleep_wdt_kick_cb,
+	.suspend_noirq	= sleep_wdt_suspend_noirq,
+	.resume_noirq	= sleep_wdt_resume_noirq,
 	.resume_early	= sleep_wdt_kick_cb,
 	.resume		= sleep_wdt_kick_cb,
 	.complete	= sleep_wdt_complete,
