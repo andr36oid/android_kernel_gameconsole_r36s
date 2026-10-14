@@ -79,6 +79,18 @@
 	andr36oid,no-rumble;
 	switch-rxy;
 	invert-absry;
+
+	/*
+	 * The R50S has one button more than the R36S, F6 on GPIO2_A5 (it's in
+	 * the ArkOS R50S device tree). It comes as extra button 1
+	 * (BTN_TRIGGER_HAPPY1); Settings > Controls > Button mapping can give it
+	 * a job. The pin already has its pull-up in btn_pins.
+	 */
+	sw14 {
+		gpios = <&gpio2 RK_PA5 GPIO_ACTIVE_LOW>;
+		label = "GPIO F6";
+		linux,code = <704>; /* BTN_TRIGGER_HAPPY1 */
+	};
 };
 
 &dsi {
