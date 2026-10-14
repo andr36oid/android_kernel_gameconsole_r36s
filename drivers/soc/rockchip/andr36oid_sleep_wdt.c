@@ -37,8 +37,12 @@
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/reset.h>
+#include <linux/freezer.h>
+#include <linux/sched/debug.h>
+#include <linux/sched/signal.h>
 #include <linux/suspend.h>
 #include <linux/syscore_ops.h>
+#include <linux/workqueue.h>
 
 #define WDT_CR		0x00
 #define WDT_CR_EN	BIT(0)
@@ -137,11 +141,31 @@ static void sleep_wdt_dump_pcs(void)
 	}
 }
 
+/* blocked tasks that aren't frozen: the frozen ones are every app, and say nothing */
+static void sleep_wdt_dump_blocked(void)
+{
+	struct task_struct *g, *t;
+
+	pr_emerg("sleep watchdog: blocked tasks:\n");
+	rcu_read_lock();
+	for_each_process_thread(g, t) {
+		if (t->state == TASK_UNINTERRUPTIBLE && !frozen(t))
+			sched_show_task(t);
+	}
+	rcu_read_unlock();
+}
+
 static irqreturn_t sleep_wdt_irq(int irq, void *data)
 {
 	pr_emerg("sleep watchdog: a sleep step hung for %u s, on CPU%d now\n",
 		 top_seconds(sw.top), smp_processor_id());
 	sleep_wdt_dump_pcs();
+	/*
+	 * The sleep task is usually not stuck on a core but waiting for something:
+	 * the stacks of the blocked tasks show what, the workqueues who is still busy.
+	 */
+	sleep_wdt_dump_blocked();
+	show_workqueue_state();
 	/* the panic saves the log in ramoops; the next timeout resets */
 	panic("sleep step hung");
 	return IRQ_HANDLED;
