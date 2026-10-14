@@ -961,9 +961,18 @@ static enum charger_t rk817_charge_get_dc_state(struct rk817_charger *charge)
 		return DC_TYPE_NONE_CHARGER;
 
 	level = gpio_get_value(charge->pdata->dc_det_pin);
+	if (level != charge->pdata->dc_det_level)
+		return DC_TYPE_NONE_CHARGER;
 
-	return (level == charge->pdata->dc_det_level) ?
-		DC_TYPE_DC_CHARGER : DC_TYPE_NONE_CHARGER;
+	/*
+	 * andr36oid: the EE clones' DC detect pin reads "in" with nothing
+	 * plugged in. There is one power input on these consoles, so DC is only
+	 * in when the PMIC sees power on it too.
+	 */
+	if (!rk817_charge_get_plug_in_status(charge))
+		return DC_TYPE_NONE_CHARGER;
+
+	return DC_TYPE_DC_CHARGER;
 }
 
 static void rk817_charge_dc_det_worker(struct work_struct *work)
@@ -1368,10 +1377,13 @@ static ssize_t charge_current_ma_store(struct device *dev,
 
 	charge->user_chrg_current = ma;
 	rk817_charge_apply_speed(charge);
-	/* a charger that is in gets the new input limit now */
-	if (charge->dc_charger != DC_TYPE_NONE_CHARGER)
+	/*
+	 * a charger that is in gets the new input limit now; only one that is
+	 * in right now, the last type seen stays set after it is unplugged
+	 */
+	if (charge->dc_in && charge->dc_charger != DC_TYPE_NONE_CHARGER)
 		rk817_charge_set_chrg_param(charge, DC_TYPE_DC_CHARGER);
-	else if (charge->usb_charger != USB_TYPE_NONE_CHARGER &&
+	else if (charge->usb_in && charge->usb_charger != USB_TYPE_NONE_CHARGER &&
 		 charge->usb_charger != USB_TYPE_UNKNOWN_CHARGER)
 		rk817_charge_set_chrg_param(charge, charge->usb_charger);
 	dev_info(dev, "charging speed %u mA (input %u mA)\n",
