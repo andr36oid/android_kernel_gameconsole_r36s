@@ -3986,6 +3986,80 @@ static int rk3308b_soc_data_init(struct rockchip_pinctrl *info)
 	return 0;
 }
 
+/*
+ * gpio_levels (root only): a snapshot of every GPIO bank for the button
+ * finder in the Controllers app. One line per bank:
+ *
+ *   gpioN level=0x........ dir=0x........ mux=<32 hex digits> pull=<32 chars>
+ *
+ * level is the input level register (pin 0 = bit 0), dir has a 1 for
+ * outputs, mux and pull list pin 0 (A0) first: mux 0 is GPIO, pull is
+ * u (up), d (down), - (none), k (bus hold) or ? (unreadable).
+ * It only reads registers: it never requests a GPIO or changes a mux,
+ * pull or direction.
+ */
+static char rockchip_pull_char(int pull)
+{
+	switch (pull) {
+	case PIN_CONFIG_BIAS_PULL_UP:
+		return 'u';
+	case PIN_CONFIG_BIAS_PULL_DOWN:
+		return 'd';
+	case PIN_CONFIG_BIAS_DISABLE:
+		return '-';
+	case PIN_CONFIG_BIAS_BUS_HOLD:
+		return 'k';
+	default:
+		return '?';
+	}
+}
+
+static ssize_t gpio_levels_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct rockchip_pinctrl *info = dev_get_drvdata(dev);
+	struct rockchip_pin_ctrl *ctrl = info->ctrl;
+	ssize_t len = 0;
+	int b, pin;
+
+	for (b = 0; b < ctrl->nr_banks; b++) {
+		struct rockchip_pin_bank *bank = &ctrl->pin_banks[b];
+		const struct rockchip_gpio_regs *regs = bank->gpio_regs;
+		void __iomem *base = bank->reg_base;
+		u32 level, dir;
+
+		if (IS_ERR_OR_NULL(base) || !regs || IS_ERR_OR_NULL(bank->clk) ||
+		    clk_enable(bank->clk)) {
+			len += scnprintf(buf + len, PAGE_SIZE - len,
+					 "%s unavailable\n", bank->name);
+			continue;
+		}
+		level = readl(base + regs->ext_port);
+		dir = readl(base + regs->port_ddr);
+		/* gpio v2 (has a version register) splits it in two halves */
+		if (regs->version_id)
+			dir = (dir & 0xffff) | (readl(base + regs->port_ddr + 4) << 16);
+		clk_disable(bank->clk);
+
+		len += scnprintf(buf + len, PAGE_SIZE - len,
+				 "%s level=0x%08x dir=0x%08x mux=",
+				 bank->name, level, dir);
+		for (pin = 0; pin < bank->nr_pins && len < PAGE_SIZE - 2; pin++) {
+			int mux = rockchip_get_mux(bank, pin);
+
+			buf[len++] = mux < 0 ? '?' : hex_asc[mux & 0xf];
+		}
+		len += scnprintf(buf + len, PAGE_SIZE - len, " pull=");
+		for (pin = 0; pin < bank->nr_pins && len < PAGE_SIZE - 2; pin++)
+			buf[len++] = rockchip_pull_char(rockchip_get_pull(bank, pin));
+		len += scnprintf(buf + len, PAGE_SIZE - len, "\n");
+	}
+
+	return len;
+}
+
+static DEVICE_ATTR(gpio_levels, 0400, gpio_levels_show, NULL);
+
 static int rockchip_pinctrl_probe(struct platform_device *pdev)
 {
 	struct rockchip_pinctrl *info;
@@ -4075,6 +4149,10 @@ static int rockchip_pinctrl_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "failed to register gpio device\n");
 		return ret;
 	}
+	/* only for the button finder: the pins work without it */
+	if (device_create_file(dev, &dev_attr_gpio_levels))
+		dev_warn(dev, "no gpio_levels file\n");
+
 	dev_info(dev, "probed %s\n", dev_name(dev));
 
 	return 0;

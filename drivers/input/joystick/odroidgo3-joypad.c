@@ -38,6 +38,9 @@
 #include <linux/iio/consumer.h>
 #include <linux/iio/types.h>
 #include <linux/property.h>
+#include <linux/gpio/driver.h>
+#include <linux/pinctrl/consumer.h>
+#include <linux/pinctrl/pinconf-generic.h>
 #include <linux/of_gpio.h>
 #include <linux/delay.h>
 #include <linux/pwm.h>
@@ -1508,6 +1511,145 @@ static int joypad_adc_setup(struct device *dev, struct joypad *joypad)
 }
 
 /*----------------------------------------------------------------------------*/
+/*----------------------------------------------------------------------------*/
+/*
+ * Extra buttons on pins the DT does not describe, found with the button
+ * finder in the Controllers app: odroidgo3_joypad.extra_gpios=2A5,3C1H
+ * Each entry is bank (0-3), port (A-D), pin (0-7) and an optional active
+ * level, L (default, pressed = low, pull-up) or H (pressed = high,
+ * pull-down). They become BTN_TRIGGER_HAPPY1-16 codes the DT does not use yet
+ * (the key layout has those 16, as Extra button 1-16).
+ * Bad entries are skipped with a warning, they never fail the probe.
+ */
+#define JOYPAD_MAX_EXTRA	8
+
+static char extra_gpios[64];
+module_param_string(extra_gpios, extra_gpios, sizeof(extra_gpios), 0444);
+MODULE_PARM_DESC(extra_gpios, "extra buttons, like 2A5,3C1H (bank, port, pin, L/H)");
+
+static int joypad_count_extra(void)
+{
+	const char *p;
+	int n = 1;
+
+	if (!extra_gpios[0])
+		return 0;
+	for (p = extra_gpios; *p; p++)
+		if (*p == ',')
+			n++;
+	return min(n, JOYPAD_MAX_EXTRA);
+}
+
+static int joypad_match_chip_label(struct gpio_chip *chip, void *data)
+{
+	return chip->label && !strcmp(chip->label, data);
+}
+
+/* "2A5" or "2A5L" or "2A5H": gpio number and active level, or -EINVAL */
+static int joypad_parse_extra(struct device *dev, const char *entry,
+			      bool *active_level)
+{
+	struct gpio_chip *chip;
+	char name[8];
+	int bank, port, pin, len = strlen(entry);
+
+	if (len < 3 || len > 4)
+		return -EINVAL;
+	bank = entry[0] - '0';
+	port = entry[1] - 'A';
+	pin = entry[2] - '0';
+	if (bank < 0 || bank > 3 || port < 0 || port > 3 || pin < 0 || pin > 7)
+		return -EINVAL;
+	if (len == 4 && entry[3] != 'L' && entry[3] != 'H')
+		return -EINVAL;
+	*active_level = (len == 4 && entry[3] == 'H');
+
+	snprintf(name, sizeof(name), "gpio%d", bank);
+	chip = gpiochip_find(name, joypad_match_chip_label);
+	if (!chip || port * 8 + pin >= chip->ngpio)
+		return -ENODEV;
+	return chip->base + port * 8 + pin;
+}
+
+static bool joypad_code_used(struct joypad *joypad, int count, int code)
+{
+	int i;
+
+	for (i = 0; i < count; i++)
+		if (joypad->gpios[i].report_type == EV_KEY &&
+		    joypad->gpios[i].linux_code == code)
+			return true;
+	return false;
+}
+
+/* adds the extra buttons after the DT ones, returns how many were added */
+static int joypad_extra_setup(struct device *dev, struct joypad *joypad,
+			      int count, int room)
+{
+	char list[sizeof(extra_gpios)], *rest = list, *entry;
+	int code = BTN_TRIGGER_HAPPY1, added = 0;
+
+	strlcpy(list, extra_gpios, sizeof(list));
+	while ((entry = strsep(&rest, ",")) != NULL && added < room) {
+		struct bt_gpio *gpio = &joypad->gpios[count + added];
+		bool active_level;
+		int num, i, error;
+		unsigned long pull;
+
+		entry = strim(entry);
+		if (!*entry)
+			continue;
+		num = joypad_parse_extra(dev, entry, &active_level);
+		if (num < 0) {
+			dev_warn(dev, "extra button '%s': not a pin, skipped\n",
+				 entry);
+			continue;
+		}
+		for (i = 0; i < count + added; i++)
+			if (joypad->gpios[i].num == num)
+				break;
+		if (i < count + added) {
+			dev_warn(dev, "extra button '%s': already a button, skipped\n",
+				 entry);
+			continue;
+		}
+		while (code <= BTN_TRIGGER_HAPPY16 &&
+		       joypad_code_used(joypad, count + added, code))
+			code++;
+		if (code > BTN_TRIGGER_HAPPY16) {
+			dev_warn(dev, "extra button '%s': no free code left, skipped\n",
+				 entry);
+			break;
+		}
+
+		error = devm_gpio_request_one(dev, num, GPIOF_IN, "extra-button");
+		if (error) {
+			dev_warn(dev, "extra button '%s': gpio %d busy (%d), skipped\n",
+				 entry, num, error);
+			continue;
+		}
+		/* the pin keeps its mux; only the pull follows the level */
+		pull = pinconf_to_config_packed(active_level ?
+						PIN_CONFIG_BIAS_PULL_DOWN :
+						PIN_CONFIG_BIAS_PULL_UP, 1);
+		error = pinctrl_gpio_set_config(num, pull);
+		if (error)
+			dev_warn(dev, "extra button '%s': pull not set (%d)\n",
+				 entry, error);
+
+		gpio->num = num;
+		gpio->label = "extra-button";
+		gpio->active_level = active_level;
+		gpio->report_type = EV_KEY;
+		gpio->linux_code = code;
+		dev_info(dev, "extra button '%s': gpio %d, code %d, active %s\n",
+			 entry, num, code, active_level ? "high" : "low");
+		added++;
+		code++;
+	}
+	return added;
+}
+
 static int joypad_gpio_setup(struct device *dev, struct joypad *joypad)
 {
 	struct device_node *node, *pp;
@@ -1517,7 +1659,8 @@ static int joypad_gpio_setup(struct device *dev, struct joypad *joypad)
 	if (!node)
 		return -ENODEV;
 
-	joypad->gpios = devm_kzalloc(dev, joypad->bt_gpio_count *
+	joypad->gpios = devm_kzalloc(dev, (joypad->bt_gpio_count +
+				joypad_count_extra()) *
 				sizeof(struct bt_gpio), GFP_KERNEL);
 
 	if (!joypad->gpios) {
@@ -1565,6 +1708,9 @@ static int joypad_gpio_setup(struct device *dev, struct joypad *joypad)
 	}
 	if (nbtn == 0)
 		return -EINVAL;
+
+	joypad->bt_gpio_count = nbtn +
+		joypad_extra_setup(dev, joypad, nbtn, joypad_count_extra());
 
 	return	0;
 }
