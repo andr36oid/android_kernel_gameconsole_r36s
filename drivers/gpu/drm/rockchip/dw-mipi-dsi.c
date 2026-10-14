@@ -1508,7 +1508,7 @@ static struct drm_connector_helper_funcs dw_mipi_dsi_connector_helper_funcs = {
 #define DSI_PREVIEW_RETRY_MS		1000
 #define DSI_PREVIEW_TRIES		5
 #define DSI_PREVIEW_MIN_MHZ		30000
-#define DSI_PREVIEW_MAX_MHZ		150000
+#define DSI_PREVIEW_MAX_MHZ		300000
 
 /* "77.5" -> 77500, in milli-Hz; 0 when it doesn't parse */
 static unsigned int dw_mipi_dsi_parse_mhz(const char *s)

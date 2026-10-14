@@ -3142,7 +3142,7 @@ MODULE_PARM_DESC(extra_rates, "Extra refresh rates in Hz to offer, comma separat
 
 #define PANEL_SIMPLE_MAX_EXTRA_RATES	16
 #define PANEL_SIMPLE_MIN_EXTRA_MHZ	30000
-#define PANEL_SIMPLE_MAX_EXTRA_MHZ	150000
+#define PANEL_SIMPLE_MAX_EXTRA_MHZ	300000
 
 /* "77.5" -> 77500, in milli-Hz; 0 when it doesn't parse */
 static unsigned int panel_simple_parse_mhz(const char *s)
@@ -3232,7 +3232,7 @@ static void panel_simple_of_add_extra_rates(struct device *dev,
 		mhz = panel_simple_parse_mhz(tok);
 		if (mhz < PANEL_SIMPLE_MIN_EXTRA_MHZ ||
 		    mhz > PANEL_SIMPLE_MAX_EXTRA_MHZ) {
-			dev_warn(dev, "extra rate '%s' left out, use 30 to 150 Hz\n",
+			dev_warn(dev, "extra rate '%s' left out, use 30 to 300 Hz\n",
 				 tok);
 			continue;
 		}
