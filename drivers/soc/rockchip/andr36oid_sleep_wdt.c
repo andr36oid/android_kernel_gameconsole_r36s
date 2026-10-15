@@ -29,6 +29,8 @@
  */
 
 #include <linux/clk.h>
+#include <linux/clk-provider.h>
+#include <linux/hrtimer.h>
 #include <linux/cpu.h>
 #include <linux/cpumask.h>
 #include <linux/delay.h>
@@ -132,6 +134,11 @@ static void sleep_wdt_dump_pcs(void)
 
 		if (!base)
 			continue;
+		/* an offline core's debug registers abort (its power is off) */
+		if (!cpu_online(cpu)) {
+			pr_emerg("sleep watchdog: CPU%d is offline\n", cpu);
+			continue;
+		}
 		if (!(readl(base + EDPRSR) & EDPRSR_PU)) {
 			pr_emerg("sleep watchdog: CPU%d is powered down\n", cpu);
 			continue;
@@ -173,11 +180,85 @@ static void sleep_wdt_dump_blocked(void)
 	rcu_read_unlock();
 }
 
+/*
+ * The rk_timer wakes the cores out of their idle states (those stop each core's own
+ * timer). Freezes so far looked like no timer firing on any core for minutes, so
+ * its clocks and registers go into the dump, plus every core's timers.
+ */
+static void __iomem *rk_timer;
+static struct clk *rk_timer_pclk, *rk_timer_clk;
+
+static void sleep_wdt_find_rk_timer(void)
+{
+	struct device_node *np = of_find_compatible_node(NULL, NULL,
+							 "rockchip,rk3288-timer");
+
+	if (!np)
+		return;
+	rk_timer = of_iomap(np, 0);
+	rk_timer_pclk = of_clk_get_by_name(np, "pclk");
+	rk_timer_clk = of_clk_get_by_name(np, "timer");
+	of_node_put(np);
+	if (IS_ERR(rk_timer_pclk))
+		rk_timer_pclk = NULL;
+	if (IS_ERR(rk_timer_clk))
+		rk_timer_clk = NULL;
+}
+
+static void sleep_wdt_dump_rk_timer(void)
+{
+	bool pclk_on = rk_timer_pclk && __clk_is_enabled(rk_timer_pclk);
+
+	pr_emerg("sleep watchdog: rk_timer pclk %d, timer clk %d\n", pclk_on,
+		 rk_timer_clk ? __clk_is_enabled(rk_timer_clk) : -1);
+	/* registers behind a gated pclk would hang the bus */
+	if (!rk_timer || !pclk_on)
+		return;
+	pr_emerg("sleep watchdog: rk_timer load %08x current %08x control %08x int %08x\n",
+		 readl(rk_timer + 0x00), readl(rk_timer + 0x08),
+		 readl(rk_timer + 0x10), readl(rk_timer + 0x18));
+}
+
 /* armed for a shutdown (andr36oid_sleep_wdt.shutdown_watch), not a sleep */
 static bool sw_shutdown;
 
+/*
+ * Awake watch (andr36oid_sleep_wdt.awake_watch, on by default): while the console
+ * runs, a timer kicks the watchdog every AWAKE_KICK_S. A console whose timers have
+ * stopped firing (it then only moves on when a button is pressed) is reset with a
+ * dump instead of crawling on. The sleep steps arm, kick and stop it as before; the
+ * worker is freezable, so it stays out of the way from the freezing of tasks on.
+ */
+#define AWAKE_KICK_S	5
+static bool awake_watch = true;
+module_param(awake_watch, bool, 0644);
+MODULE_PARM_DESC(awake_watch, "Reset with a dump if timers stop firing while awake");
+static u64 awake_kick_ns;
+
+static void awake_kick_fn(struct work_struct *work);
+static DECLARE_DELAYED_WORK(awake_kick_work, awake_kick_fn);
+
+static void awake_kick_fn(struct work_struct *work)
+{
+	if (sw_shutdown || system_state != SYSTEM_RUNNING)
+		return;
+	if (awake_watch) {
+		sleep_wdt_arm();
+		sleep_wdt_kick();
+		awake_kick_ns = local_clock();
+	} else if (awake_kick_ns) {
+		sleep_wdt_disarm();
+		awake_kick_ns = 0;
+	}
+	queue_delayed_work(system_freezable_wq, &awake_kick_work,
+			   AWAKE_KICK_S * HZ);
+}
+
 static irqreturn_t sleep_wdt_irq(int irq, void *data)
 {
+	if (awake_kick_ns)
+		pr_emerg("sleep watchdog: last awake kick %llu ms ago\n",
+			 div_u64(local_clock() - awake_kick_ns, NSEC_PER_MSEC));
 	if (sw_shutdown)
 		pr_emerg("sleep watchdog: the shutdown didn't finish, on CPU%d now\n",
 			 smp_processor_id());
@@ -185,12 +266,15 @@ static irqreturn_t sleep_wdt_irq(int irq, void *data)
 		pr_emerg("sleep watchdog: a sleep step hung for %u s, on CPU%d now\n",
 			 top_seconds(sw.top), smp_processor_id());
 	sleep_wdt_dump_pcs();
+	sleep_wdt_dump_rk_timer();
 	/*
 	 * The sleep task is usually not stuck on a core but waiting for something:
 	 * the stacks of the blocked tasks show what, the workqueues who is still busy.
 	 */
 	sleep_wdt_dump_blocked();
 	show_workqueue_state();
+	/* last, it's long: each core's tick device, the broadcast one, pending hrtimers */
+	sysrq_timer_list_show();
 	/* the panic saves the log in ramoops; the next timeout resets */
 	if (sw_shutdown)
 		panic("shutdown hung");
@@ -229,6 +313,8 @@ static int sleep_wdt_prepare(struct device *dev)
 		irq_set_affinity(sw.irq,
 				 cpumask_of(cpumask_last(cpu_online_mask)));
 	sleep_wdt_arm();
+	/* the awake watch may have armed it already */
+	sleep_wdt_kick();
 	return 0;
 }
 
@@ -337,8 +423,10 @@ static int sleep_wdt_probe(struct platform_device *pdev)
 	sw.top = WDT_MAX_TOP;
 	reset_control_deassert(sw.rst);
 
+	sleep_wdt_find_rk_timer();
 	register_syscore_ops(&sleep_wdt_syscore_ops);
 	sw_ready = true;
+	queue_delayed_work(system_freezable_wq, &awake_kick_work, AWAKE_KICK_S * HZ);
 	dev_info(&pdev->dev, "armed during suspend and resume, %u s per phase%s\n",
 		 top_seconds(sw.top), sw.irq > 0 ? ", core PCs dumped before the reset" : "");
 	return 0;
