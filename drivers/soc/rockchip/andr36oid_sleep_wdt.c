@@ -21,7 +21,8 @@
  * the crash log names the function each core hung in. The second timeout
  * resets the SoC as before.
  * It also takes the other cores down at the start of
- * suspend (early_cpu_off, see sleep_cpus_pm_notify) and watches that too.
+ * suspend (early_cpu_off, see sleep_cpus_pm_notify) and watches that too,
+ * and watches a shutdown once init says one started (shutdown_watch).
  * It does not use the watchdog framework: there is no /dev/watchdog and no
  * restart handler, so reboot works as before. The DT node stays disabled
  * for dw_wdt; this driver finds it by its compatible string.
@@ -172,10 +173,17 @@ static void sleep_wdt_dump_blocked(void)
 	rcu_read_unlock();
 }
 
+/* armed for a shutdown (andr36oid_sleep_wdt.shutdown_watch), not a sleep */
+static bool sw_shutdown;
+
 static irqreturn_t sleep_wdt_irq(int irq, void *data)
 {
-	pr_emerg("sleep watchdog: a sleep step hung for %u s, on CPU%d now\n",
-		 top_seconds(sw.top), smp_processor_id());
+	if (sw_shutdown)
+		pr_emerg("sleep watchdog: the shutdown didn't finish, on CPU%d now\n",
+			 smp_processor_id());
+	else
+		pr_emerg("sleep watchdog: a sleep step hung for %u s, on CPU%d now\n",
+			 top_seconds(sw.top), smp_processor_id());
 	sleep_wdt_dump_pcs();
 	/*
 	 * The sleep task is usually not stuck on a core but waiting for something:
@@ -184,6 +192,8 @@ static irqreturn_t sleep_wdt_irq(int irq, void *data)
 	sleep_wdt_dump_blocked();
 	show_workqueue_state();
 	/* the panic saves the log in ramoops; the next timeout resets */
+	if (sw_shutdown)
+		panic("shutdown hung");
 	panic("sleep step hung");
 	return IRQ_HANDLED;
 }
@@ -260,9 +270,17 @@ static void sleep_wdt_syscore_resume(void)
 	sleep_wdt_arm();
 }
 
+/* a restart resets the SoC anyway; stopped so nothing can bite after it */
+static void sleep_wdt_syscore_shutdown(void)
+{
+	if (system_state == SYSTEM_RESTART)
+		sleep_wdt_disarm();
+}
+
 static struct syscore_ops sleep_wdt_syscore_ops = {
 	.suspend	= sleep_wdt_syscore_suspend,
 	.resume		= sleep_wdt_syscore_resume,
+	.shutdown	= sleep_wdt_syscore_shutdown,
 };
 
 static void sleep_wdt_complete(struct device *dev)
@@ -360,6 +378,8 @@ module_param(early_cpu_off, bool, 0644);
 MODULE_PARM_DESC(early_cpu_off, "take the other cores down before suspend, not at its end");
 
 static struct cpumask early_off_cpus;
+static void sleep_cpus_online_fn(struct work_struct *work);
+static DECLARE_WORK(sleep_cpus_online_work, sleep_cpus_online_fn);
 
 /*
  * The cores' steps happen before the devices' .prepare arms the watchdog and
@@ -413,27 +433,106 @@ static int sleep_cpus_pm_notify(struct notifier_block *nb, unsigned long action,
 			sleep_cpus_watch(false);
 			break;
 		}
-		sleep_cpus_watch(true);
-		lock_device_hotplug();
-		for_each_cpu(cpu, &early_off_cpus) {
-			dev = get_cpu_device(cpu);
-			ret = dev ? device_online(dev) : -ENODEV;
-			if (ret < 0)
-				pr_warn("sleep: CPU%d didn't come back after resume: %d\n",
-					cpu, ret);
-			sleep_wdt_kick();
-		}
-		cpumask_clear(&early_off_cpus);
-		unlock_device_hotplug();
+		/*
+		 * Core hotplug is still off here (cpu_hotplug_pm_callback comes
+		 * after this one): the cores come back from a worker
+		 */
 		sleep_cpus_watch(false);
+		schedule_work(&sleep_cpus_online_work);
 		break;
 	}
 	return NOTIFY_OK;
 }
 
+static void sleep_cpus_online_fn(struct work_struct *work)
+{
+	struct device *dev;
+	int cpu, ret, tries;
+
+	/* no next suspend before the cores are back */
+	lock_system_sleep();
+	sleep_cpus_watch(true);
+	lock_device_hotplug();
+	for_each_cpu(cpu, &early_off_cpus) {
+		dev = get_cpu_device(cpu);
+		ret = -ENODEV;
+		/* -EBUSY until cpu_hotplug_pm_callback has turned hotplug back on */
+		for (tries = 0; dev && tries < 100; tries++) {
+			ret = device_online(dev);
+			if (ret != -EBUSY)
+				break;
+			unlock_device_hotplug();
+			msleep(10);
+			lock_device_hotplug();
+		}
+		if (ret < 0)
+			pr_warn("sleep: CPU%d didn't come back after resume: %d\n",
+				cpu, ret);
+		sleep_wdt_kick();
+	}
+	cpumask_clear(&early_off_cpus);
+	unlock_device_hotplug();
+	sleep_cpus_watch(false);
+	unlock_system_sleep();
+}
+
+/*
+ * Before cpu_hotplug_pm_callback (priority 0), which turns core hotplug off
+ * for the whole suspend
+ */
 static struct notifier_block sleep_cpus_pm_nb = {
 	.notifier_call = sleep_cpus_pm_notify,
+	.priority = 1,
 };
+
+/*
+ * Shutdown: init's "on shutdown" sets andr36oid_sleep_wdt.shutdown_watch. A
+ * shutdown that hung left a console on with a black screen until the battery
+ * was flat; now the watchdog is kicked for SHUTDOWN_WATCH_S, then left to run
+ * out: its interrupt dumps the cores and panics (ramoops keeps it), the next
+ * timeout resets. A restart stops it at the end (syscore .shutdown).
+ */
+#define SHUTDOWN_WATCH_S	60
+#define SHUTDOWN_KICK_S		10
+static unsigned int shutdown_kicks;
+
+static void shutdown_kick_fn(struct work_struct *work);
+static DECLARE_DELAYED_WORK(shutdown_kick_work, shutdown_kick_fn);
+
+static void shutdown_kick_fn(struct work_struct *work)
+{
+	if (!sw.armed || !sw_shutdown)
+		return;
+	sleep_wdt_kick();
+	if (++shutdown_kicks < SHUTDOWN_WATCH_S / SHUTDOWN_KICK_S)
+		schedule_delayed_work(&shutdown_kick_work, SHUTDOWN_KICK_S * HZ);
+}
+
+static int shutdown_watch_set(const char *val, const struct kernel_param *kp)
+{
+	bool on;
+	int ret = kstrtobool(val, &on);
+
+	if (ret)
+		return ret;
+	if (!on || !sw_ready || sw_shutdown)
+		return 0;
+	sw_shutdown = true;
+	if (sw.irq > 0)
+		irq_set_affinity(sw.irq, cpumask_of(cpumask_first(cpu_online_mask)));
+	sleep_wdt_arm();
+	sleep_wdt_kick();
+	pr_info("sleep watchdog: watching the shutdown\n");
+	schedule_delayed_work(&shutdown_kick_work, SHUTDOWN_KICK_S * HZ);
+	return 0;
+}
+
+static const struct kernel_param_ops shutdown_watch_ops = {
+	.set = shutdown_watch_set,
+	.get = param_get_bool,
+};
+module_param_cb(shutdown_watch, &shutdown_watch_ops, &sw_shutdown, 0200);
+MODULE_PARM_DESC(shutdown_watch, "1: watch the shutdown that has just started");
 
 static int __init sleep_wdt_init(void)
 {
