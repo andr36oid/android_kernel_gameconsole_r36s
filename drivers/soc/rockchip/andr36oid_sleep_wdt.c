@@ -20,17 +20,22 @@
  * answer even when a core is stuck on the bus), prints them and panics, so
  * the crash log names the function each core hung in. The second timeout
  * resets the SoC as before.
+ * It also takes the other cores down at the start of
+ * suspend (early_cpu_off, see sleep_cpus_pm_notify) and watches that too.
  * It does not use the watchdog framework: there is no /dev/watchdog and no
  * restart handler, so reboot works as before. The DT node stays disabled
  * for dw_wdt; this driver finds it by its compatible string.
  */
 
 #include <linux/clk.h>
+#include <linux/cpu.h>
 #include <linux/cpumask.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/module.h>
+#include <linux/moduleparam.h>
+#include <linux/suspend.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
@@ -76,6 +81,8 @@ struct sleep_wdt {
 static void __iomem *cpu_debug[CPU_DEBUG_NR];
 
 static struct sleep_wdt sw;
+/* the watchdog probed fine: it can guard the early core steps too */
+static bool sw_ready;
 
 static unsigned int top_seconds(u32 top)
 {
@@ -313,6 +320,7 @@ static int sleep_wdt_probe(struct platform_device *pdev)
 	reset_control_deassert(sw.rst);
 
 	register_syscore_ops(&sleep_wdt_syscore_ops);
+	sw_ready = true;
 	dev_info(&pdev->dev, "armed during suspend and resume, %u s per phase%s\n",
 		 top_seconds(sw.top), sw.irq > 0 ? ", core PCs dumped before the reset" : "");
 	return 0;
@@ -337,10 +345,102 @@ static struct platform_driver sleep_wdt_driver = {
 	},
 };
 
+/*
+ * Deep sleep hangs taking the other cores down at the very end of suspend:
+ * after every device's noirq suspend, a core's teardown waits for an RCU
+ * grace period that never ends (dumps from a genuine R36S and a G80C, with
+ * a core still in f2fs writeback by then). Here they go down at the start
+ * instead, while every device and interrupt still works, and come back after
+ * the resume, so the late step has nothing left to do.
+ * andr36oid_sleep_wdt.early_cpu_off=0 on the command line goes back to the
+ * kernel's own way, for comparison.
+ */
+static bool early_cpu_off = true;
+module_param(early_cpu_off, bool, 0644);
+MODULE_PARM_DESC(early_cpu_off, "take the other cores down before suspend, not at its end");
+
+static struct cpumask early_off_cpus;
+
+/*
+ * The cores' steps happen before the devices' .prepare arms the watchdog and
+ * after their .complete stops it: watched here too, its interrupt on the core
+ * that stays up.
+ */
+static void sleep_cpus_watch(bool on)
+{
+	if (!sw_ready)
+		return;
+	if (on) {
+		if (sw.irq > 0)
+			irq_set_affinity(sw.irq, cpumask_of(cpumask_first(cpu_online_mask)));
+		sleep_wdt_arm();
+		sleep_wdt_kick();
+	} else {
+		sleep_wdt_disarm();
+	}
+}
+
+static int sleep_cpus_pm_notify(struct notifier_block *nb, unsigned long action,
+				void *data)
+{
+	struct device *dev;
+	int cpu, ret;
+
+	switch (action) {
+	case PM_SUSPEND_PREPARE:
+		if (!early_cpu_off)
+			break;
+		sleep_cpus_watch(true);
+		lock_device_hotplug();
+		for_each_online_cpu(cpu) {
+			if (cpu == cpumask_first(cpu_online_mask))
+				continue;
+			dev = get_cpu_device(cpu);
+			ret = dev ? device_offline(dev) : -ENODEV;
+			if (ret == 0)
+				cpumask_set_cpu(cpu, &early_off_cpus);
+			else if (ret < 0)
+				pr_warn("sleep: CPU%d didn't go down before suspend: %d\n",
+					cpu, ret);
+			sleep_wdt_kick();
+		}
+		unlock_device_hotplug();
+		/* stays armed: the devices' .prepare goes on from here */
+		break;
+	case PM_POST_SUSPEND:
+		if (cpumask_empty(&early_off_cpus)) {
+			/* a suspend that failed before the devices' .complete */
+			sleep_cpus_watch(false);
+			break;
+		}
+		sleep_cpus_watch(true);
+		lock_device_hotplug();
+		for_each_cpu(cpu, &early_off_cpus) {
+			dev = get_cpu_device(cpu);
+			ret = dev ? device_online(dev) : -ENODEV;
+			if (ret < 0)
+				pr_warn("sleep: CPU%d didn't come back after resume: %d\n",
+					cpu, ret);
+			sleep_wdt_kick();
+		}
+		cpumask_clear(&early_off_cpus);
+		unlock_device_hotplug();
+		sleep_cpus_watch(false);
+		break;
+	}
+	return NOTIFY_OK;
+}
+
+static struct notifier_block sleep_cpus_pm_nb = {
+	.notifier_call = sleep_cpus_pm_notify,
+};
+
 static int __init sleep_wdt_init(void)
 {
 	struct platform_device *pdev;
 	int ret;
+
+	register_pm_notifier(&sleep_cpus_pm_nb);
 
 	ret = platform_driver_register(&sleep_wdt_driver);
 	if (ret)
