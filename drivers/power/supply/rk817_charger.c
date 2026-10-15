@@ -956,6 +956,20 @@ static irqreturn_t rk817_charge_dc_det_isr(int irq, void *charger)
 	return IRQ_HANDLED;
 }
 
+/*
+ * andr36oid: power on the input, as the PMIC sees it. On the genuine R36S the
+ * plug-in flag (and its interrupt) never comes for its charger, but the PMIC
+ * charges from it: a charging state counts as power too.
+ */
+static bool rk817_charge_has_power(struct rk817_charger *charge)
+{
+	int chg = rk817_charge_field_read(charge, CHG_STS);
+
+	return rk817_charge_get_plug_in_status(charge) ||
+	       chg == DEAD_CHRG || chg == TRICKLE_CHRG ||
+	       chg == CC_OR_CV_CHRG || chg == CHRG_TERM;
+}
+
 static enum charger_t rk817_charge_get_dc_state(struct rk817_charger *charge)
 {
 	int level;
@@ -972,7 +986,7 @@ static enum charger_t rk817_charge_get_dc_state(struct rk817_charger *charge)
 	 * plugged in. There is one power input on these consoles, so DC is only
 	 * in when the PMIC sees power on it too.
 	 */
-	if (!rk817_charge_get_plug_in_status(charge))
+	if (!rk817_charge_has_power(charge))
 		return DC_TYPE_NONE_CHARGER;
 
 	return DC_TYPE_DC_CHARGER;
@@ -986,10 +1000,11 @@ static void rk817_charge_dc_det_worker(struct work_struct *work)
 
 	charger = rk817_charge_get_dc_state(charge);
 	/* andr36oid: what each check saw, for plug-ins that go unnoticed */
-	dev_info(charge->dev, "DC check: detect pin %d, PMIC sees power %d: %s\n",
+	dev_info(charge->dev, "DC check: detect pin %d, PMIC plug-in flag %d, charge state %d: %s\n",
 		 charge->pdata->support_dc_det ?
 		 gpio_get_value(charge->pdata->dc_det_pin) : -1,
 		 rk817_charge_get_plug_in_status(charge),
+		 rk817_charge_field_read(charge, CHG_STS),
 		 charger == DC_TYPE_DC_CHARGER ? "in" : "out");
 	/*
 	 * The detect pin changes before the PMIC sees the power, and the PMIC's
