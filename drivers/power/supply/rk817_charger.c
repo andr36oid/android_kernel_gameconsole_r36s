@@ -1602,6 +1602,14 @@ static void rk817_charge_irq_delay_work(struct work_struct *work)
 		if (charge->pdata->extcon)
 			queue_delayed_work(charge->usb_charger_wq, &charge->usb_work,
 					   msecs_to_jiffies(10));
+		/*
+		 * andr36oid: the DC detect pin's check also wants the PMIC to see
+		 * power, and the pin can change before the PMIC does: look again
+		 * now that it has, or a charger stays "not in"
+		 */
+		if (charge->dc_charger_wq)
+			queue_delayed_work(charge->dc_charger_wq, &charge->dc_work,
+					   msecs_to_jiffies(10));
 	} else if (charge->plugout_trigger) {
 		DBG("pmic: plug out\n");
 		charge->plugout_trigger = 0;
