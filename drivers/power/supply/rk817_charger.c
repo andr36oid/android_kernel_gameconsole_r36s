@@ -332,8 +332,6 @@ struct rk817_charger {
 	u8 plugin_trigger;
 	u8 plugout_trigger;
 	int plugin_irq;
-	/* andr36oid: DC checks left while the pin is in but the PMIC sees no power yet */
-	int dc_retries;
 	int plugout_irq;
 	/* held while a charger is in: no deep sleep on the charger */
 	struct wakeup_source *charging_ws;
@@ -949,25 +947,10 @@ static irqreturn_t rk817_charge_dc_det_isr(int irq, void *charger)
 	else
 		irq_set_irq_type(irq, IRQF_TRIGGER_HIGH);
 
-	charge->dc_retries = 10;
 	queue_delayed_work(charge->dc_charger_wq, &charge->dc_work,
 			   msecs_to_jiffies(10));
 
 	return IRQ_HANDLED;
-}
-
-/*
- * andr36oid: power on the input, as the PMIC sees it. On the genuine R36S the
- * plug-in flag (and its interrupt) never comes for its charger, but the PMIC
- * charges from it: a charging state counts as power too.
- */
-static bool rk817_charge_has_power(struct rk817_charger *charge)
-{
-	int chg = rk817_charge_field_read(charge, CHG_STS);
-
-	return rk817_charge_get_plug_in_status(charge) ||
-	       chg == DEAD_CHRG || chg == TRICKLE_CHRG ||
-	       chg == CC_OR_CV_CHRG || chg == CHRG_TERM;
 }
 
 static enum charger_t rk817_charge_get_dc_state(struct rk817_charger *charge)
@@ -978,18 +961,9 @@ static enum charger_t rk817_charge_get_dc_state(struct rk817_charger *charge)
 		return DC_TYPE_NONE_CHARGER;
 
 	level = gpio_get_value(charge->pdata->dc_det_pin);
-	if (level != charge->pdata->dc_det_level)
-		return DC_TYPE_NONE_CHARGER;
 
-	/*
-	 * andr36oid: the EE clones' DC detect pin reads "in" with nothing
-	 * plugged in. There is one power input on these consoles, so DC is only
-	 * in when the PMIC sees power on it too.
-	 */
-	if (!rk817_charge_has_power(charge))
-		return DC_TYPE_NONE_CHARGER;
-
-	return DC_TYPE_DC_CHARGER;
+	return (level == charge->pdata->dc_det_level) ?
+		DC_TYPE_DC_CHARGER : DC_TYPE_NONE_CHARGER;
 }
 
 static void rk817_charge_dc_det_worker(struct work_struct *work)
@@ -1006,18 +980,6 @@ static void rk817_charge_dc_det_worker(struct work_struct *work)
 		 rk817_charge_get_plug_in_status(charge),
 		 rk817_charge_field_read(charge, CHG_STS),
 		 charger == DC_TYPE_DC_CHARGER ? "in" : "out");
-	/*
-	 * The detect pin changes before the PMIC sees the power, and the PMIC's
-	 * own plug-in interrupt doesn't come on the genuine R36S: look again
-	 * for a while, or a charger plugged in while running stays unnoticed
-	 */
-	if (charger != DC_TYPE_DC_CHARGER && charge->pdata->support_dc_det &&
-	    gpio_get_value(charge->pdata->dc_det_pin) == charge->pdata->dc_det_level &&
-	    charge->dc_retries > 0) {
-		charge->dc_retries--;
-		queue_delayed_work(charge->dc_charger_wq, &charge->dc_work,
-				   msecs_to_jiffies(200));
-	}
 	if (charger == DC_TYPE_DC_CHARGER) {
 		DBG("detect dc charger in..\n");
 		rk817_charge_set_chrg_param(charge, DC_TYPE_DC_CHARGER);
@@ -1637,14 +1599,6 @@ static void rk817_charge_irq_delay_work(struct work_struct *work)
 		charge->plugin_trigger = 0;
 		if (charge->pdata->extcon)
 			queue_delayed_work(charge->usb_charger_wq, &charge->usb_work,
-					   msecs_to_jiffies(10));
-		/*
-		 * andr36oid: the DC detect pin's check also wants the PMIC to see
-		 * power, and the pin can change before the PMIC does: look again
-		 * now that it has, or a charger stays "not in"
-		 */
-		if (charge->dc_charger_wq)
-			queue_delayed_work(charge->dc_charger_wq, &charge->dc_work,
 					   msecs_to_jiffies(10));
 	} else if (charge->plugout_trigger) {
 		dev_info(charge->dev, "PMIC: power out\n");
