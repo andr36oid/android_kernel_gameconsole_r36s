@@ -657,6 +657,16 @@ struct rk817_battery_device {
 	int				force_new_dsoc;
 	/* the boot-time gauge decision, kept for gauge_boot in sysfs */
 	char				boot_info[200];
+	/*
+	 * Charge out of and into the battery since boot, straight from the coulomb
+	 * counter, the driver's own corrections of it left out (rk817_bat_track_q).
+	 * Settings > Battery measures the real capacity with it.
+	 */
+	struct mutex			track_lock;
+	bool				track_ok;
+	u32				track_q;
+	u64				drained_adc;
+	u64				charged_adc;
 
 	int				dbg_cap_low0;
 	int				dbg_pwr_dsoc;
@@ -1225,12 +1235,37 @@ static void  fuel_gauge_q_init_info(struct rk817_battery_device *battery)
 	DBG("Q_INIT_L0 = 0x%x\n", rk817_bat_field_read(battery, Q_INIT_L0));
 }
 
+/*
+ * Adds what the coulomb counter moved since the last look to drained/charged.
+ * Called from the monitor work and right before the driver sets the counter to
+ * a new value, so its corrections never count as charge.
+ */
+static void rk817_bat_track_q(struct rk817_battery_device *battery)
+{
+	u32 q;
+
+	if (rk817_bat_read_q_press(battery, &q)) {
+		battery->track_ok = false;
+		return;
+	}
+	if (battery->track_ok) {
+		if (q < battery->track_q)
+			battery->drained_adc += battery->track_q - q;
+		else
+			battery->charged_adc += q - battery->track_q;
+	}
+	battery->track_q = q;
+	battery->track_ok = true;
+}
+
 static void rk817_bat_init_coulomb_cap(struct rk817_battery_device *battery,
 				       u32 capacity)
 {
 	u8 buf;
 	u32 cap;
 
+	mutex_lock(&battery->track_lock);
+	rk817_bat_track_q(battery);
 	fuel_gauge_q_init_info(battery);
 	cap = CAPACITY_TO_ADC(capacity, battery->res_div);
 	DBG("new cap: 0x%x\n", cap);
@@ -1242,6 +1277,10 @@ static void rk817_bat_init_coulomb_cap(struct rk817_battery_device *battery,
 	rk817_bat_field_write(battery, Q_INIT_L1, buf);
 	buf = (cap >> 0) & 0xff;
 	rk817_bat_field_write(battery, Q_INIT_L0, buf);
+
+	/* the counter starts over from here */
+	battery->track_q = cap;
+	mutex_unlock(&battery->track_lock);
 
 	battery->rsoc = capacity * 1000 * 100 / battery->fcc;
 	battery->remain_cap = capacity * 1000;
@@ -3363,8 +3402,40 @@ static ssize_t gauge_boot_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(gauge_boot);
 
+/* charge in uAh out of (drained) and into (charged) the battery since boot */
+static ssize_t rk817_bat_show_tracked(struct device *dev, char *buf,
+				      bool drained)
+{
+	struct rk817_battery_device *battery = dev_get_drvdata(dev);
+	u64 adc;
+
+	mutex_lock(&battery->track_lock);
+	rk817_bat_track_q(battery);
+	adc = drained ? battery->drained_adc : battery->charged_adc;
+	mutex_unlock(&battery->track_lock);
+	/* ADC_TO_CAPACITY_UAH, in 64 bits */
+	return sprintf(buf, "%llu\n",
+		       div_u64(div_u64(adc, 3600) * 172, battery->res_div));
+}
+
+static ssize_t drained_uah_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	return rk817_bat_show_tracked(dev, buf, true);
+}
+static DEVICE_ATTR_RO(drained_uah);
+
+static ssize_t charged_uah_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	return rk817_bat_show_tracked(dev, buf, false);
+}
+static DEVICE_ATTR_RO(charged_uah);
+
 static struct attribute *rk817_bat_attrs[] = {
 	&dev_attr_gauge_boot.attr,
+	&dev_attr_drained_uah.attr,
+	&dev_attr_charged_uah.attr,
 	&dev_attr_design_capacity_mah.attr,
 	&dev_attr_design_capacity_default_mah.attr,
 	&dev_attr_charge_limit_percent.attr,
@@ -3383,6 +3454,9 @@ static void rk817_battery_work(struct work_struct *work)
 			     struct rk817_battery_device,
 			     bat_delay_work.work);
 
+	mutex_lock(&battery->track_lock);
+	rk817_bat_track_q(battery);
+	mutex_unlock(&battery->track_lock);
 	rk817_bat_update_info(battery);
 	rk817_bat_lowpwr_check(battery);
 	rk817_bat_display_smooth(battery);
@@ -3510,6 +3584,7 @@ static int rk817_battery_probe(struct platform_device *pdev)
 	battery->rk817 = rk817;
 	battery->client = client;
 	battery->dev = &pdev->dev;
+	mutex_init(&battery->track_lock);
 	platform_set_drvdata(pdev, battery);
 	battery->chip_id = rk817->variant;
 
