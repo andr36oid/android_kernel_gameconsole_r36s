@@ -332,6 +332,8 @@ struct rk817_charger {
 	u8 plugin_trigger;
 	u8 plugout_trigger;
 	int plugin_irq;
+	/* andr36oid: DC checks left while the pin is in but the PMIC sees no power yet */
+	int dc_retries;
 	int plugout_irq;
 	/* held while a charger is in: no deep sleep on the charger */
 	struct wakeup_source *charging_ws;
@@ -947,6 +949,7 @@ static irqreturn_t rk817_charge_dc_det_isr(int irq, void *charger)
 	else
 		irq_set_irq_type(irq, IRQF_TRIGGER_HIGH);
 
+	charge->dc_retries = 10;
 	queue_delayed_work(charge->dc_charger_wq, &charge->dc_work,
 			   msecs_to_jiffies(10));
 
@@ -982,6 +985,24 @@ static void rk817_charge_dc_det_worker(struct work_struct *work)
 			struct rk817_charger, dc_work.work);
 
 	charger = rk817_charge_get_dc_state(charge);
+	/* andr36oid: what each check saw, for plug-ins that go unnoticed */
+	dev_info(charge->dev, "DC check: detect pin %d, PMIC sees power %d: %s\n",
+		 charge->pdata->support_dc_det ?
+		 gpio_get_value(charge->pdata->dc_det_pin) : -1,
+		 rk817_charge_get_plug_in_status(charge),
+		 charger == DC_TYPE_DC_CHARGER ? "in" : "out");
+	/*
+	 * The detect pin changes before the PMIC sees the power, and the PMIC's
+	 * own plug-in interrupt doesn't come on the genuine R36S: look again
+	 * for a while, or a charger plugged in while running stays unnoticed
+	 */
+	if (charger != DC_TYPE_DC_CHARGER && charge->pdata->support_dc_det &&
+	    gpio_get_value(charge->pdata->dc_det_pin) == charge->pdata->dc_det_level &&
+	    charge->dc_retries > 0) {
+		charge->dc_retries--;
+		queue_delayed_work(charge->dc_charger_wq, &charge->dc_work,
+				   msecs_to_jiffies(200));
+	}
 	if (charger == DC_TYPE_DC_CHARGER) {
 		DBG("detect dc charger in..\n");
 		rk817_charge_set_chrg_param(charge, DC_TYPE_DC_CHARGER);
@@ -1597,7 +1618,7 @@ static void rk817_charge_irq_delay_work(struct work_struct *work)
 			struct rk817_charger, irq_work.work);
 
 	if (charge->plugin_trigger) {
-		DBG("pmic: plug in\n");
+		dev_info(charge->dev, "PMIC: power in\n");
 		charge->plugin_trigger = 0;
 		if (charge->pdata->extcon)
 			queue_delayed_work(charge->usb_charger_wq, &charge->usb_work,
@@ -1611,7 +1632,7 @@ static void rk817_charge_irq_delay_work(struct work_struct *work)
 			queue_delayed_work(charge->dc_charger_wq, &charge->dc_work,
 					   msecs_to_jiffies(10));
 	} else if (charge->plugout_trigger) {
-		DBG("pmic: plug out\n");
+		dev_info(charge->dev, "PMIC: power out\n");
 		charge->plugout_trigger = 0;
 		rk817_charge_set_chrg_param(charge, USB_TYPE_NONE_CHARGER);
 		rk817_charge_set_chrg_param(charge, DC_TYPE_NONE_CHARGER);
