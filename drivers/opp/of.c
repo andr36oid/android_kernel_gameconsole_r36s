@@ -333,7 +333,8 @@ static int _opp_add_static_v2(struct opp_table *opp_table, struct device *dev,
 		goto free_opp;
 	}
 
-	new_opp->turbo = of_property_read_bool(np, "turbo-mode");
+	new_opp->turbo = of_property_read_bool(np, "turbo-mode") ||
+			 of_property_read_bool(np, "andr36oid,overclock");
 
 	new_opp->np = np;
 	new_opp->dynamic = false;
@@ -409,8 +410,16 @@ static int _of_add_opp_table_v2(struct device *dev, struct device_node *opp_np)
 	if (!opp_table)
 		return -ENOMEM;
 
-	/* We have opp-table node now, iterate over it and add OPPs */
-	for_each_available_child_of_node(opp_np, np) {
+	/*
+	 * We have opp-table node now, iterate over it and add OPPs.
+	 * andr36oid: overclock OPPs (andr36oid,overclock) are "disabled" in the DT so older
+	 * kernels (the recovery's) never use them; this one adds them as turbo OPPs, which
+	 * devfreq keeps above the user limit until it is raised (see devfreq.c).
+	 */
+	for_each_child_of_node(opp_np, np) {
+		if (!of_device_is_available(np) &&
+		    !of_property_read_bool(np, "andr36oid,overclock"))
+			continue;
 		count++;
 
 		ret = _opp_add_static_v2(opp_table, dev, np);

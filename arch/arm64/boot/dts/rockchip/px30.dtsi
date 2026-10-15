@@ -1401,6 +1401,20 @@
 			opp-microvolt-L2 = <1050000>;
 			opp-microvolt-L3 = <1000000>;
 		};
+		/*
+		 * andr36oid: GPU overclock, gpll / 2, after R36 Tuner Next (zenmode-adri). Disabled so older
+		 * kernels skip it; ours adds it as an overclock OPP, off until max_freq is raised.
+		 */
+		opp-600000000 {
+			status = "disabled";
+			andr36oid,overclock;
+			opp-hz = /bits/ 64 <600000000>;
+			opp-microvolt = <1150000>;
+			opp-microvolt-L0 = <1150000>;
+			opp-microvolt-L1 = <1150000>;
+			opp-microvolt-L2 = <1150000>;
+			opp-microvolt-L3 = <1150000>;
+		};
 	};
 
 	mpp_srv: mpp-srv {
@@ -1942,6 +1956,35 @@
 			opp-microvolt-L2 = <1025000>;
 			opp-microvolt-L3 = <1000000>;
 		};		
+		/*
+		 * andr36oid: RAM overclock, the DDR firmware runs it at about 924 MHz, after R36 Tuner Next (zenmode-adri). Disabled so older
+		 * kernels skip it; ours adds it as an overclock OPP, off until max_freq is raised.
+		 */
+		opp-928000000 {
+			status = "disabled";
+			andr36oid,overclock;
+			opp-hz = /bits/ 64 <928000000>;
+			opp-microvolt = <1100000>;
+			opp-microvolt-L0 = <1100000>;
+			opp-microvolt-L1 = <1100000>;
+			opp-microvolt-L2 = <1100000>;
+			opp-microvolt-L3 = <1100000>;
+		};
+
+		/*
+		 * andr36oid: RAM overclock (experimental), about 1032 MHz, needs the 1150 mV rail ceiling, after R36 Tuner Next (zenmode-adri). Disabled so older
+		 * kernels skip it; ours adds it as an overclock OPP, off until max_freq is raised.
+		 */
+		opp-1040000000 {
+			status = "disabled";
+			andr36oid,overclock;
+			opp-hz = /bits/ 64 <1040000000>;
+			opp-microvolt = <1150000>;
+			opp-microvolt-L0 = <1150000>;
+			opp-microvolt-L1 = <1150000>;
+			opp-microvolt-L2 = <1150000>;
+			opp-microvolt-L3 = <1150000>;
+		};
 	};
 
 	rockchip_system_monitor: rockchip-system-monitor {
