@@ -46,6 +46,7 @@
 #include <linux/pm.h>
 #include <linux/reset.h>
 #include <linux/freezer.h>
+#include <linux/sched/clock.h>
 #include <linux/sched/debug.h>
 #include <linux/sched/signal.h>
 #include <linux/suspend.h>
