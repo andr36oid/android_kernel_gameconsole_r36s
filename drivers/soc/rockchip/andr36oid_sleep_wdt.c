@@ -224,14 +224,14 @@ static void sleep_wdt_dump_rk_timer(void)
 static bool sw_shutdown;
 
 /*
- * Awake watch (andr36oid_sleep_wdt.awake_watch=1, off by default): while the console
+ * Awake watch (andr36oid_sleep_wdt.awake_watch, on by default): while the console
  * runs, a timer kicks the watchdog every AWAKE_KICK_S. A console whose timers have
  * stopped firing (it then only moves on when a button is pressed) is reset with a
  * dump instead of crawling on. The sleep steps arm, kick and stop it as before; the
  * worker is freezable, so it stays out of the way from the freezing of tasks on.
  */
 #define AWAKE_KICK_S	5
-static bool awake_watch;
+static bool awake_watch = true;
 module_param(awake_watch, bool, 0644);
 MODULE_PARM_DESC(awake_watch, "Reset with a dump if timers stop firing while awake");
 static u64 awake_kick_ns;
@@ -459,11 +459,10 @@ static struct platform_driver sleep_wdt_driver = {
  * a core still in f2fs writeback by then). Here they go down at the start
  * instead, while every device and interrupt still works, and come back after
  * the resume, so the late step has nothing left to do.
- * Off by default (andr36oid_sleep_wdt.early_cpu_off=1 turns it on): on a
- * genuine R36S it still hung, and the console then ran with timers that
- * hardly fired.
+ * andr36oid_sleep_wdt.early_cpu_off=0 on the command line goes back to the
+ * kernel's own way, for comparison.
  */
-static bool early_cpu_off;
+static bool early_cpu_off = true;
 module_param(early_cpu_off, bool, 0644);
 MODULE_PARM_DESC(early_cpu_off, "take the other cores down before suspend, not at its end");
 
