@@ -277,6 +277,8 @@ struct charger_platform_data {
 
 	u32 power_dc2otg;
 	u32 dc_det_level;
+	/* andr36oid,dc-det-needs-power: the detect pin alone can't be trusted */
+	bool dc_det_needs_power;
 	int dc_det_pin;
 	bool support_dc_det;
 	int virtual_power;
@@ -332,6 +334,8 @@ struct rk817_charger {
 	u8 plugin_trigger;
 	u8 plugout_trigger;
 	int plugin_irq;
+	/* andr36oid: DC checks left while the pin is in but the PMIC sees no power yet */
+	int dc_retries;
 	int plugout_irq;
 	/* held while a charger is in: no deep sleep on the charger */
 	struct wakeup_source *charging_ws;
@@ -947,11 +951,59 @@ static irqreturn_t rk817_charge_dc_det_isr(int irq, void *charger)
 	else
 		irq_set_irq_type(irq, IRQF_TRIGGER_HIGH);
 
+	charge->dc_retries = 10;
 	queue_delayed_work(charge->dc_charger_wq, &charge->dc_work,
 			   msecs_to_jiffies(10));
 
 	return IRQ_HANDLED;
 }
+
+/*
+ * andr36oid: how a DC charger is detected, per console. "pin": the detect pin
+ * alone (the genuine R36S: its PMIC never sets the plug-in flag for the
+ * charger). "power": the pin and the PMIC's plug-in flag (EE clones: their pin
+ * reads "in" with nothing plugged in). "auto": what the device tree says
+ * (andr36oid,dc-det-needs-power), else "pin". Kernel Tweaks sets it at runtime.
+ */
+enum { DC_DET_AUTO, DC_DET_PIN, DC_DET_POWER };
+static const char * const dc_det_modes[] = { "auto", "pin", "power" };
+static int dc_det_mode;
+static struct rk817_charger *dc_det_charger;
+
+static bool rk817_charge_dc_needs_power(struct rk817_charger *charge)
+{
+	if (dc_det_mode == DC_DET_AUTO)
+		return charge->pdata->dc_det_needs_power;
+	return dc_det_mode == DC_DET_POWER;
+}
+
+static int dc_det_mode_set(const char *val, const struct kernel_param *kp)
+{
+	int i = sysfs_match_string(dc_det_modes, val);
+
+	if (i < 0)
+		return i;
+	dc_det_mode = i;
+	/* look again with the new rule */
+	if (dc_det_charger && dc_det_charger->dc_charger_wq) {
+		dc_det_charger->dc_retries = 10;
+		queue_delayed_work(dc_det_charger->dc_charger_wq,
+				   &dc_det_charger->dc_work, 0);
+	}
+	return 0;
+}
+
+static int dc_det_mode_get(char *buf, const struct kernel_param *kp)
+{
+	return sprintf(buf, "%s\n", dc_det_modes[dc_det_mode]);
+}
+
+static const struct kernel_param_ops dc_det_mode_ops = {
+	.set = dc_det_mode_set,
+	.get = dc_det_mode_get,
+};
+module_param_cb(dc_det_mode, &dc_det_mode_ops, NULL, 0644);
+MODULE_PARM_DESC(dc_det_mode, "DC charger detection: auto, pin or power");
 
 static enum charger_t rk817_charge_get_dc_state(struct rk817_charger *charge)
 {
@@ -961,9 +1013,13 @@ static enum charger_t rk817_charge_get_dc_state(struct rk817_charger *charge)
 		return DC_TYPE_NONE_CHARGER;
 
 	level = gpio_get_value(charge->pdata->dc_det_pin);
+	if (level != charge->pdata->dc_det_level)
+		return DC_TYPE_NONE_CHARGER;
+	if (rk817_charge_dc_needs_power(charge) &&
+	    !rk817_charge_get_plug_in_status(charge))
+		return DC_TYPE_NONE_CHARGER;
 
-	return (level == charge->pdata->dc_det_level) ?
-		DC_TYPE_DC_CHARGER : DC_TYPE_NONE_CHARGER;
+	return DC_TYPE_DC_CHARGER;
 }
 
 static void rk817_charge_dc_det_worker(struct work_struct *work)
@@ -974,12 +1030,25 @@ static void rk817_charge_dc_det_worker(struct work_struct *work)
 
 	charger = rk817_charge_get_dc_state(charge);
 	/* andr36oid: what each check saw, for plug-ins that go unnoticed */
-	dev_info(charge->dev, "DC check: detect pin %d, PMIC plug-in flag %d, charge state %d: %s\n",
+	dev_info(charge->dev, "DC check (%s): detect pin %d, PMIC plug-in flag %d, charge state %d: %s\n",
+		 rk817_charge_dc_needs_power(charge) ? "pin and power" : "pin",
 		 charge->pdata->support_dc_det ?
 		 gpio_get_value(charge->pdata->dc_det_pin) : -1,
 		 rk817_charge_get_plug_in_status(charge),
 		 rk817_charge_field_read(charge, CHG_STS),
 		 charger == DC_TYPE_DC_CHARGER ? "in" : "out");
+	/*
+	 * with "power", the pin can change before the PMIC sees the power:
+	 * look again for 2 s
+	 */
+	if (charger != DC_TYPE_DC_CHARGER && rk817_charge_dc_needs_power(charge) &&
+	    charge->pdata->support_dc_det &&
+	    gpio_get_value(charge->pdata->dc_det_pin) == charge->pdata->dc_det_level &&
+	    charge->dc_retries > 0) {
+		charge->dc_retries--;
+		queue_delayed_work(charge->dc_charger_wq, &charge->dc_work,
+				   msecs_to_jiffies(200));
+	}
 	if (charger == DC_TYPE_DC_CHARGER) {
 		DBG("detect dc charger in..\n");
 		rk817_charge_set_chrg_param(charge, DC_TYPE_DC_CHARGER);
@@ -1031,10 +1100,8 @@ static int rk817_charge_init_dc(struct rk817_charger *charge)
 	}
 
 	level = gpio_get_value(charge->pdata->dc_det_pin);
-	if (level == charge->pdata->dc_det_level)
-		charge->dc_charger = DC_TYPE_DC_CHARGER;
-	else
-		charge->dc_charger = DC_TYPE_NONE_CHARGER;
+	charge->dc_charger = rk817_charge_get_dc_state(charge);
+	dc_det_charger = charge;
 
 	if (level)
 		irq_flags = IRQF_TRIGGER_LOW;
@@ -1566,6 +1633,8 @@ static int rk817_charge_parse_dt(struct rk817_charger *charge)
 			return -EINVAL;
 		}
 	}
+	pdata->dc_det_needs_power =
+		of_property_read_bool(np, "andr36oid,dc-det-needs-power");
 
 	DBG("input_current:%d\n"
 		"input_min_voltage: %d\n"
@@ -1599,6 +1668,10 @@ static void rk817_charge_irq_delay_work(struct work_struct *work)
 		charge->plugin_trigger = 0;
 		if (charge->pdata->extcon)
 			queue_delayed_work(charge->usb_charger_wq, &charge->usb_work,
+					   msecs_to_jiffies(10));
+		/* andr36oid: with "power", now the PMIC sees it */
+		if (charge->dc_charger_wq && rk817_charge_dc_needs_power(charge))
+			queue_delayed_work(charge->dc_charger_wq, &charge->dc_work,
 					   msecs_to_jiffies(10));
 	} else if (charge->plugout_trigger) {
 		dev_info(charge->dev, "PMIC: power out\n");

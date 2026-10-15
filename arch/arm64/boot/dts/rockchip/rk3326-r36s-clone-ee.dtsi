@@ -166,6 +166,8 @@
 &rk817 {
 	charger {
 		dc_det_gpio = <&gpio3 RK_PA5 GPIO_ACTIVE_HIGH>;
+		/* reads "in" with nothing plugged in: also needs the PMIC to see power */
+		andr36oid,dc-det-needs-power;
 		/delete-property/ bat_low_gpio;	/* GPIO2_B5 is L3 here */
 		max_input_current = <800>;
 		max_chrg_current = <800>;
