@@ -22,6 +22,17 @@
 #include <linux/atomic.h>
 #include <linux/nmi.h>
 #include <linux/sched/wake_q.h>
+#include <linux/sched/clock.h>
+
+#ifdef CONFIG_ANDR36OID_SLEEP_WDT
+/* andr36oid: drivers/soc/rockchip/andr36oid_sleep_wdt.c, each core's PC */
+void andr36oid_stuck_dump(void);
+#else
+static inline void andr36oid_stuck_dump(void) { }
+#endif
+/* longer than this in one state is a hang; below the sleep watchdog's 21 s */
+#define MULTI_STOP_STUCK_NS	(10ULL * NSEC_PER_SEC)
+static atomic_t multi_stop_stuck_reported;
 
 /*
  * Structure to determine completion condition and record errors.  May
@@ -186,6 +197,8 @@ static int multi_cpu_stop(void *data)
 	int cpu = smp_processor_id(), err = 0;
 	unsigned long flags;
 	bool is_active;
+	u64 since = local_clock();
+	unsigned int spins = 0;
 
 	/*
 	 * When called from stop_machine_from_inactive_cpu(), irq might
@@ -217,6 +230,22 @@ static int multi_cpu_stop(void *data)
 				break;
 			}
 			ack_state(msdata);
+			since = local_clock();
+		} else if (!(++spins & 0x3ff) &&
+			   local_clock() - since > MULTI_STOP_STUCK_NS &&
+			   !atomic_xchg(&multi_stop_stuck_reported, 1)) {
+			/*
+			 * andr36oid: a core never acked (seen taking CPU2 down for
+			 * deep sleep). Every core spins here with interrupts off,
+			 * so no watchdog interrupt or lockup detector can say
+			 * which one or where: say it from here, then panic so
+			 * ramoops keeps it.
+			 */
+			pr_emerg("stop_machine: CPU%d waited 10 s in state %d, %d of %u cores not acked, cpu_online %*pbl\n",
+				 cpu, curstate, atomic_read(&msdata->thread_ack),
+				 msdata->num_threads, cpumask_pr_args(cpu_online_mask));
+			andr36oid_stuck_dump();
+			panic("stop_machine hung");
 		} else if (curstate > MULTI_STOP_PREPARE) {
 			/*
 			 * At this stage all other CPUs we depend on must spin

@@ -141,6 +141,16 @@ static void sleep_wdt_dump_pcs(void)
 	}
 }
 
+/*
+ * For hangs with interrupts off on every core, where the watchdog's interrupt
+ * never runs (a core that doesn't answer while stop_machine takes a core down
+ * for deep sleep): the waiting core calls this, the debug registers still work.
+ */
+void andr36oid_stuck_dump(void)
+{
+	sleep_wdt_dump_pcs();
+}
+
 /* blocked tasks that aren't frozen: the frozen ones are every app, and say nothing */
 static void sleep_wdt_dump_blocked(void)
 {
