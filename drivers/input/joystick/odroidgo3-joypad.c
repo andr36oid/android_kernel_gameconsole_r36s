@@ -172,6 +172,8 @@ struct joypad {
 	bool invert_absy;
 	bool invert_absrx;
 	bool invert_absry;
+	/* left and right stick reported as each other (stick_swap) */
+	bool stick_swap;
 	
 	/* report interval (ms) */
 	int bt_gpio_count;
@@ -807,6 +809,11 @@ static DEVICE_ATTR(rumble_boost_weak, S_IWUSR | S_IRUGO,
  *   whether each axis is reported backwards: "x y rx ry", 0 or 1 each.
  *   Starts from the DT's invert-abs* properties; clones that wire a stick
  *   the other way round can be fixed without a new DTB.
+ *
+ * /sys/devices/platform/odroidgo3-joypad/stick_swap [rw]
+ *   1 reports the left stick as the right one and the other way round, for
+ *   clones with the sticks swapped or players who want them so. stick_raw,
+ *   stick_cal and stick_invert stay with the physical stick.
  */
 /*----------------------------------------------------------------------------*/
 static int stick_raw_limit(struct joypad *joypad)
@@ -1003,6 +1010,31 @@ static DEVICE_ATTR(stick_invert, S_IWUSR | S_IRUGO,
 		   joypad_show_stick_invert,
 		   joypad_store_stick_invert);
 
+static ssize_t joypad_store_stick_swap(struct device *dev,
+				       struct device_attribute *attr,
+				       const char *buf, size_t count)
+{
+	struct joypad *joypad = platform_get_drvdata(to_platform_device(dev));
+	bool swap;
+
+	if (kstrtobool(buf, &swap))
+		return -EINVAL;
+	WRITE_ONCE(joypad->stick_swap, swap);
+	return count;
+}
+
+static ssize_t joypad_show_stick_swap(struct device *dev,
+				      struct device_attribute *attr, char *buf)
+{
+	struct joypad *joypad = platform_get_drvdata(to_platform_device(dev));
+
+	return sprintf(buf, "%d\n", READ_ONCE(joypad->stick_swap));
+}
+
+static DEVICE_ATTR(stick_swap, S_IWUSR | S_IRUGO,
+		   joypad_show_stick_swap,
+		   joypad_store_stick_swap);
+
 /*
  * /sys/devices/platform/odroidgo3_joypad/rumble [r]
  *   the motor the DT describes: "pwm", "gpio" or "none"
@@ -1063,6 +1095,7 @@ static struct attribute *joypad_attrs[] = {
 	&dev_attr_stick_cal.attr,
 	&dev_attr_stick_deadzone.attr,
 	&dev_attr_stick_invert.attr,
+	&dev_attr_stick_swap.attr,
 	NULL,
 };
 
@@ -1105,6 +1138,20 @@ static void joypad_gpio_check(struct input_polled_dev *poll_dev)
 }
 
 /*----------------------------------------------------------------------------*/
+/* the axis an axis is reported as, with the sticks swapped or not */
+static int joypad_out_axis(struct joypad *joypad, int type)
+{
+	if (!READ_ONCE(joypad->stick_swap))
+		return type;
+	switch (type) {
+	case ABS_X:	return ABS_RX;
+	case ABS_Y:	return ABS_RY;
+	case ABS_RX:	return ABS_X;
+	case ABS_RY:	return ABS_Y;
+	}
+	return type;
+}
+
 static void joypad_stick_report(struct joypad *joypad,
 				struct input_dev *input,
 				const struct stick_cal *cal)
@@ -1127,7 +1174,7 @@ static void joypad_stick_report(struct joypad *joypad,
 		if (axis < 0)
 			continue;
 		adc->value = CLAMP(out[axis], adc->min, adc->max);
-		input_report_abs(input, adc->report_type,
+		input_report_abs(input, joypad_out_axis(joypad, adc->report_type),
 			adc->invert ? adc->value * (-1) : adc->value);
 	}
 }
@@ -1180,7 +1227,7 @@ static void joypad_adc_check(struct input_polled_dev *poll_dev)
 		adc->value = adc->value < adc->min ? adc->min : adc->value;
 
 		input_report_abs(poll_dev->input,
-			adc->report_type,
+			joypad_out_axis(joypad, adc->report_type),
 			adc->invert ? adc->value * (-1) : adc->value);
 	}
 	if (cal.valid)
