@@ -146,6 +146,16 @@ static void Hal_EfuseParseBTCoexistInfo(PADAPTER adapter, u8 *map, u8 mapvalid)
 			hal->EEPROMBluetoothCoexist = _TRUE;
 		else
 			hal->EEPROMBluetoothCoexist = _FALSE;
+	} else if (rtw_read32(adapter, REG_WL_BT_PWR_CTRL_8821C) & BIT_BT_FUNC_EN_8821C) {
+		/*
+		 * andr36oid: some retail combo dongles (0bda:c820, Cut D) leave the
+		 * board option unprogrammed although their Bluetooth is on. Without
+		 * coex the Wi-Fi-only setup takes the shared antenna away from
+		 * Bluetooth (gnt_bt=0). The hidden report still turns coex off on
+		 * chips without Bluetooth.
+		 */
+		hal->EEPROMBluetoothCoexist = _TRUE;
+		RTW_INFO("EEPROM board option blank, BT is on: BT-coex\n");
 	} else
 		hal->EEPROMBluetoothCoexist = _FALSE;
 
@@ -398,6 +408,14 @@ static u8 Hal_ReadRFEType(PADAPTER adapter, u8 *map, u8 mapvalid)
 	if (mapvalid) {
 		/* check efuse map */
 		hal->rfe_type = map[EEPROM_RFE_OPTION_8821C];
+		/*
+		 * andr36oid: Cut D dongles with 0x22 here are type 2 (1-Ant, BTG);
+		 * read as is it counts as an external PA/LNA module.
+		 */
+		if (hal->rfe_type == 0x22) {
+			RTW_INFO("EEPROM rfe_type 0x22 used as 0x2\n");
+			hal->rfe_type = 0x2;
+		}
 		if (0xFF != hal->rfe_type)
 			goto exit;
 	}
@@ -498,6 +516,16 @@ u8 rtl8821c_read_efuse(PADAPTER adapter)
 
 	Hal_EfuseParseEEPROMVer(adapter, efuse_map, valid);
 	hal_config_macaddr(adapter, hal->bautoload_fail_flag);
+	/*
+	 * andr36oid: some Cut D dongles keep their 2.4 GHz TX power calibration
+	 * only in the path B (BTG) block and leave path A blank, so 2.4 GHz runs
+	 * at the default power and barely hears anything. Fix found by a
+	 * dArkOSen user (RTL8821CU patch): use path B's values for path A.
+	 */
+	if (valid && efuse_map[0x10] == 0xFF && efuse_map[0x3A] != 0xFF) {
+		_rtw_memcpy(&efuse_map[0x10], &efuse_map[0x3A], 12);
+		RTW_INFO("EEPROM 2.4G TX power of path A blank, copied from path B\n");
+	}
 	Hal_EfuseParseTxPowerInfo(adapter, efuse_map, valid);
 	Hal_EfuseParseBoardType(adapter, efuse_map, valid);
 	Hal_EfuseParseBTCoexistInfo(adapter, efuse_map, valid);
