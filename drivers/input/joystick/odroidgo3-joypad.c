@@ -132,6 +132,8 @@ struct bt_gpio {
 	int report_type;
 	/* report linux code */
 	int linux_code;
+	/* the code the last press went out as, so the release matches it */
+	int sent_code;
 	/* prev button value */
 	bool old_value;
 	/* button press level */
@@ -812,8 +814,9 @@ static DEVICE_ATTR(rumble_boost_weak, S_IWUSR | S_IRUGO,
  *
  * /sys/devices/platform/odroidgo3-joypad/stick_swap [rw]
  *   1 reports the left stick as the right one and the other way round, for
- *   clones with the sticks swapped or players who want them so. stick_raw,
- *   stick_cal and stick_invert stay with the physical stick.
+ *   clones with the sticks swapped or players who want them so, their clicks
+ *   (L3/R3) too. stick_raw, stick_cal and stick_invert stay with the
+ *   physical stick.
  */
 /*----------------------------------------------------------------------------*/
 static int stick_raw_limit(struct joypad *joypad)
@@ -1105,6 +1108,29 @@ static struct attribute_group joypad_attr_group = {
 
 /*----------------------------------------------------------------------------*/
 /*----------------------------------------------------------------------------*/
+/*
+ * The code a button goes out as: with the sticks swapped (stick_swap), L3 and
+ * R3 swap too. The R36S device trees send them as KEY_BACK and KEY_LEFTMETA
+ * (the keylayout makes them THUMBL/THUMBR), others as BTN_THUMBL/BTN_THUMBR.
+ */
+static int joypad_out_key(struct joypad *joypad, struct input_dev *input,
+			  int type, int code)
+{
+	int other;
+
+	if (type != EV_KEY || !READ_ONCE(joypad->stick_swap))
+		return code;
+	switch (code) {
+	case KEY_BACK:		other = KEY_LEFTMETA; break;
+	case KEY_LEFTMETA:	other = KEY_BACK; break;
+	case BTN_THUMBL:	other = BTN_THUMBR; break;
+	case BTN_THUMBR:	other = BTN_THUMBL; break;
+	default:		return code;
+	}
+	/* a console with one stick click only keeps it where it is */
+	return test_bit(other, input->keybit) ? other : code;
+}
+
 static void joypad_gpio_check(struct input_polled_dev *poll_dev)
 {
 	struct joypad *joypad = poll_dev->private;
@@ -1126,9 +1152,15 @@ static void joypad_gpio_check(struct input_polled_dev *poll_dev)
 			    ktime_before(now, ktime_add(gpio->changed,
 						       joypad->button_debounce)))
 				continue;
+			if (value == gpio->active_level)
+				gpio->sent_code = joypad_out_key(joypad,
+						poll_dev->input, gpio->report_type,
+						gpio->linux_code);
+			else if (!gpio->sent_code)
+				gpio->sent_code = gpio->linux_code;
 			input_event(poll_dev->input,
 				gpio->report_type,
-				gpio->linux_code,
+				gpio->sent_code,
 				(value == gpio->active_level) ? 1 : 0);
 			gpio->old_value = value;
 			gpio->changed = now;
