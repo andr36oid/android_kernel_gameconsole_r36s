@@ -11,6 +11,7 @@
 #include <linux/dcache.h>
 #include <linux/mm.h>
 #include <linux/pagemap.h>
+#include <linux/mm_inline.h>
 #include <linux/bio.h>
 #include <linux/buffer_head.h>
 #include <linux/magic.h>

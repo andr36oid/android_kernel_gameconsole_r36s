@@ -13,9 +13,9 @@ static void erofs_readendio(struct bio *bio)
 {
 	struct bio_vec *bvec;
 	blk_status_t err = bio->bi_status;
-	struct bvec_iter_all iter_all;
+	int i;
 
-	bio_for_each_segment_all(bvec, bio, iter_all) {
+	bio_for_each_segment_all(bvec, bio, i) {
 		struct page *page = bvec->bv_page;
 
 		/* page is already locked */
