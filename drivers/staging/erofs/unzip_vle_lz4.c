@@ -30,6 +30,12 @@ int z_erofs_vle_plain_copy(struct page **compressed_pages,
 {
 	unsigned i, j;
 	void *src = NULL;
+	/*
+	 * Whether src came from kmap_atomic. mirrored[] can't tell: it turns
+	 * true when the source page shows up again as an output page, after
+	 * src was already mapped, and the unmap was then skipped.
+	 */
+	bool src_mapped = false;
 	const unsigned righthalf = PAGE_SIZE - pageofs;
 	char *percpu_data;
 	bool mirrored[Z_EROFS_CLUSTER_MAX_PAGES] = { 0 };
@@ -43,11 +49,10 @@ int z_erofs_vle_plain_copy(struct page **compressed_pages,
 		void *dst;
 
 		if (page == NULL) {
-			if (src != NULL) {
-				if (!mirrored[j])
-					kunmap_atomic(src);
-				src = NULL;
-			}
+			if (src_mapped)
+				kunmap_atomic(src);
+			src = NULL;
+			src_mapped = false;
 			continue;
 		}
 
@@ -64,15 +69,28 @@ int z_erofs_vle_plain_copy(struct page **compressed_pages,
 		}
 
 		if (i) {
-			if (src == NULL)
-				src = mirrored[i-1] ?
-					percpu_data + (i-1) * PAGE_SIZE :
-					kmap_atomic(compressed_pages[i-1]);
+			/* src is the page being written now, read the copy */
+			if (src_mapped && mirrored[i-1]) {
+				kunmap_atomic(src);
+				src = NULL;
+				src_mapped = false;
+			}
+
+			if (src == NULL) {
+				if (mirrored[i-1]) {
+					src = percpu_data + (i-1) * PAGE_SIZE;
+				} else {
+					src = kmap_atomic(compressed_pages[i-1]);
+					src_mapped = true;
+				}
+			}
 
 			memcpy(dst, src + righthalf, pageofs);
 
-			if (!mirrored[i-1])
+			if (src_mapped)
 				kunmap_atomic(src);
+			src = NULL;
+			src_mapped = false;
 
 			if (unlikely(i >= clusterpages)) {
 				kunmap_atomic(dst);
@@ -80,19 +98,18 @@ int z_erofs_vle_plain_copy(struct page **compressed_pages,
 			}
 		}
 
-		if (!righthalf)
-			src = NULL;
-		else {
-			src = mirrored[i] ? percpu_data + i * PAGE_SIZE :
-				kmap_atomic(compressed_pages[i]);
-
-			memcpy(dst + pageofs, src, righthalf);
+		if (mirrored[i]) {
+			src = percpu_data + i * PAGE_SIZE;
+		} else {
+			src = kmap_atomic(compressed_pages[i]);
+			src_mapped = true;
 		}
+		memcpy(dst + pageofs, src, righthalf);
 
 		kunmap_atomic(dst);
 	}
 
-	if (src != NULL && !mirrored[j])
+	if (src_mapped)
 		kunmap_atomic(src);
 
 	preempt_enable();
