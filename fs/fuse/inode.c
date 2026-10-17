@@ -1377,9 +1377,19 @@ static void fuse_sysfs_cleanup(void)
 	kobject_put(fuse_kobj);
 }
 
+/* fuse.disable=1 (Kernel Tweaks > FUSE): FUSE isn't registered at all, no /dev/fuse */
+static bool fuse_disable;
+module_param_named(disable, fuse_disable, bool, 0444);
+MODULE_PARM_DESC(disable, "Don't register FUSE at all");
+
 static int __init fuse_init(void)
 {
 	int res;
+
+	if (fuse_disable) {
+		pr_info("fuse: switched off on the command line\n");
+		return 0;
+	}
 
 	printk(KERN_INFO "fuse init (API version %i.%i)\n",
 	       FUSE_KERNEL_VERSION, FUSE_KERNEL_MINOR_VERSION);
