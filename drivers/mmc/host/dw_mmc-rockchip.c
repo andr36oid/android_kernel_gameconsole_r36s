@@ -383,6 +383,18 @@ static const struct of_device_id dw_mci_rockchip_match[] = {
 };
 MODULE_DEVICE_TABLE(of, dw_mci_rockchip_match);
 
+/*
+ * andr36oid: Settings > Storage > Second SD card off puts
+ * dw_mmc_rockchip.second_slot=0 on the command line (through Kernel Tweaks), and
+ * the console's second card slot isn't registered at all: no mmcblk1, nothing
+ * for Android to mount. The slot is the host marked andr36oid,second-card-slot
+ * that still takes SD cards (consoles with SDIO Wi-Fi on that host drop
+ * supports-sd, so their Wi-Fi stays).
+ */
+static bool second_slot = true;
+module_param(second_slot, bool, 0444);
+MODULE_PARM_DESC(second_slot, "Register the console's second SD card slot");
+
 static int dw_mci_rockchip_probe(struct platform_device *pdev)
 {
 	const struct dw_mci_drv_data *drv_data;
@@ -392,6 +404,13 @@ static int dw_mci_rockchip_probe(struct platform_device *pdev)
 
 	if (!pdev->dev.of_node)
 		return -ENODEV;
+
+	if (!second_slot &&
+	    of_property_read_bool(pdev->dev.of_node, "andr36oid,second-card-slot") &&
+	    of_property_read_bool(pdev->dev.of_node, "supports-sd")) {
+		dev_info(&pdev->dev, "second SD card slot switched off\n");
+		return -ENODEV;
+	}
 
 	if (!device_property_read_bool(&pdev->dev, "non-removable") &&
 	    !device_property_read_bool(&pdev->dev, "cd-gpios"))
