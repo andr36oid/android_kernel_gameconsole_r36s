@@ -688,36 +688,36 @@ static void rk817_charge_ilimit_enable(struct rk817_charger *charge)
 	rk817_charge_field_write(charge, USB_ILIM_EN, ENABLE);
 }
 
+/*
+ * andr36oid: Kernel Tweaks, off by default. The input current limit is the
+ * nearest step instead of the one below: the EE clones' 800 mA is then 850 mA
+ * instead of 450 mA.
+ */
+static bool input_nearest_step;
+module_param(input_nearest_step, bool, 0644);
+MODULE_PARM_DESC(input_nearest_step, "Input current limit: nearest step, not the one below");
+
 static void rk817_charge_set_input_current(struct rk817_charger *charge,
 					   int input_current)
 {
+	static const struct { int ma; int sel; } steps[] = {
+		{ 80, INPUT_CUR_80MA }, { 450, INPUT_CUR_450MA },
+		{ 850, INPUT_CUR_850MA }, { 1500, INPUT_CUR_1500MA },
+		{ 1750, INPUT_CUR_1750MA }, { 2000, INPUT_CUR_2000MA },
+		{ 2500, INPUT_CUR_2500MA }, { 3000, INPUT_CUR_3000MA },
+	};
+	int i, best = 0;
+
 	if (input_current < 80 || input_current > 3000)
 		dev_err(charge->dev, "the input current is error.\n");
 
-	if (input_current < 450)
-		rk817_charge_field_write(charge, USB_ILIM_SEL,
-					 INPUT_CUR_80MA);
-	else if (input_current < 850)
-		rk817_charge_field_write(charge, USB_ILIM_SEL,
-					 INPUT_CUR_450MA);
-	else if (input_current < 1500)
-		rk817_charge_field_write(charge, USB_ILIM_SEL,
-					 INPUT_CUR_850MA);
-	else if (input_current < 1750)
-		rk817_charge_field_write(charge, USB_ILIM_SEL,
-					 INPUT_CUR_1500MA);
-	else if (input_current < 2000)
-		rk817_charge_field_write(charge, USB_ILIM_SEL,
-					 INPUT_CUR_1750MA);
-	else if (input_current < 2500)
-		rk817_charge_field_write(charge, USB_ILIM_SEL,
-					 INPUT_CUR_2000MA);
-	else if (input_current < 3000)
-		rk817_charge_field_write(charge, USB_ILIM_SEL,
-					 INPUT_CUR_2500MA);
-	else
-		rk817_charge_field_write(charge, USB_ILIM_SEL,
-					 INPUT_CUR_3000MA);
+	for (i = 1; i < ARRAY_SIZE(steps); i++)
+		if (input_nearest_step ?
+		    abs(steps[i].ma - input_current) <
+		    abs(steps[best].ma - input_current) :
+		    steps[i].ma <= input_current)
+			best = i;
+	rk817_charge_field_write(charge, USB_ILIM_SEL, steps[best].sel);
 
 	rk817_charge_ilimit_enable(charge);
 
