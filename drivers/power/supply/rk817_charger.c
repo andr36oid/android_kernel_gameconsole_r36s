@@ -805,6 +805,8 @@ static void rk817_charge_set_otg_in(struct rk817_charger *charge, int online)
 	charge->otg_in = online;
 }
 
+static void rk817_charge_dump_regs(struct rk817_charger *charge, const char *why);
+
 static void rk817_charge_set_chrg_param(struct rk817_charger *charge,
 					enum charger_t charger)
 {
@@ -882,6 +884,8 @@ static void rk817_charge_set_chrg_param(struct rk817_charger *charge,
 		dev_info(charge->dev, "%s plugged in: charge %u mA, input %u mA\n",
 			 charger == USB_TYPE_AC_CHARGER ? "Wall charger" : "DC charger",
 			 charge->max_chrg_current, charge->max_input_current);
+	if (charger != USB_TYPE_NONE_CHARGER && charger != DC_TYPE_NONE_CHARGER)
+		rk817_charge_dump_regs(charge, "plugged in");
 
 	if (rk817_charge_online(charge) && rk817_charge_get_dsoc(charge) == 100)
 		charge->prop_status = POWER_SUPPLY_STATUS_FULL;
@@ -916,6 +920,26 @@ static void rk817_charge_log_regs(struct rk817_charger *charge, const char *why)
 	dev_info(charge->dev, "PMIC (%s): b4=%02x e4=%02x e5=%02x e6=%02x eb=%02x ec=%02x otg5v %d\n",
 		 why, v[0], v[1], v[2], v[3], v[4], v[5],
 		 rk817_charge_get_otg_state(charge));
+}
+
+/*
+ * andr36oid: every PMIC register from 0xB0 (switches, boost, OTG, charger) for
+ * problem reports: at probe before the driver writes anything, that is what
+ * U-Boot left (it charges where the kernel doesn't on the Diium D-28S), and
+ * again whenever a charger is taken as plugged in.
+ */
+static void rk817_charge_dump_regs(struct rk817_charger *charge, const char *why)
+{
+	char line[16 * 3 + 1];
+	unsigned int reg, v;
+	int i;
+
+	for (reg = 0xb0; reg <= 0xff; reg += 16) {
+		for (i = 0; i < 16; i++)
+			snprintf(line + i * 3, 4, " %02x",
+				 regmap_read(charge->regmap, reg + i, &v) ? 0xff : v & 0xff);
+		dev_info(charge->dev, "PMIC regs %s %02x:%s\n", why, reg, line);
+	}
 }
 
 static void rk817_charge_set_otg_state(struct rk817_charger *charge, int state)
@@ -1861,6 +1885,7 @@ static int rk817_charge_probe(struct platform_device *pdev)
 		dev_err(charge->dev, "Failed to initialize regmap\n");
 		return -EINVAL;
 	}
+	rk817_charge_dump_regs(charge, "from U-Boot");
 
 	for (i = 0; i < ARRAY_SIZE(rk817_charge_reg_fields); i++) {
 		const struct reg_field *reg_fields = rk817_charge_reg_fields;
