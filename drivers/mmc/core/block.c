@@ -44,6 +44,7 @@
 #include <linux/mmc/host.h>
 #include <linux/mmc/mmc.h>
 #include <linux/mmc/sd.h>
+#include <linux/of.h>
 
 #include <linux/uaccess.h>
 
@@ -270,6 +271,20 @@ static ssize_t power_ro_lock_store(struct device *dev,
 out_put:
 	mmc_blk_put(md);
 	return count;
+}
+
+/*
+ * andr36oid: a host marked andr36oid,read-only in the device tree (a console's
+ * built-in eMMC with its stock OS on it, switched on by Kernel Tweaks, see
+ * dw_mmc-rockchip.c) is never written to: the disk and its boot areas are
+ * read-only for good (force_ro can't clear that, write opens fail), requests
+ * other than reads fail, and raw MMC commands from user space (ioctl) are
+ * refused, since those could write too.
+ */
+static bool mmc_blk_andr36oid_ro(struct mmc_card *card)
+{
+	return card && of_property_read_bool(mmc_dev(card->host)->of_node,
+					     "andr36oid,read-only");
 }
 
 static ssize_t force_ro_show(struct device *dev, struct device_attribute *attr,
@@ -666,6 +681,9 @@ static int mmc_blk_ioctl_cmd(struct mmc_blk_data *md,
 	int err = 0, ioc_err = 0;
 	struct request *req;
 
+	if (mmc_blk_andr36oid_ro(md->queue.card))
+		return -EROFS;
+
 	idata = mmc_blk_ioctl_copy_from_user(ic_ptr);
 	if (IS_ERR(idata))
 		return PTR_ERR(idata);
@@ -716,6 +734,9 @@ static int mmc_blk_ioctl_multi_cmd(struct mmc_blk_data *md,
 	int i, err = 0, ioc_err = 0;
 	__u64 num_of_cmds;
 	struct request *req;
+
+	if (mmc_blk_andr36oid_ro(md->queue.card))
+		return -EROFS;
 
 	if (copy_from_user(&num_of_cmds, &user->num_of_cmds,
 			   sizeof(num_of_cmds)))
@@ -2233,6 +2254,11 @@ enum mmc_issued mmc_blk_mq_issue_rq(struct mmc_queue *mq, struct request *req)
 	struct mmc_host *host = card->host;
 	int ret;
 
+	/* andr36oid: only reads on a read-only built-in eMMC (see above) */
+	if (mmc_blk_andr36oid_ro(card) && req_op(req) != REQ_OP_READ &&
+	    req_op(req) != REQ_OP_FLUSH && req_op(req) != REQ_OP_DRV_IN)
+		return MMC_REQ_FAILED_TO_START;
+
 	ret = mmc_blk_part_switch(card, md->part_type);
 	if (ret)
 		return MMC_REQ_FAILED_TO_START;
@@ -2294,7 +2320,8 @@ enum mmc_issued mmc_blk_mq_issue_rq(struct mmc_queue *mq, struct request *req)
 static inline int mmc_blk_readonly(struct mmc_card *card)
 {
 	return mmc_card_readonly(card) ||
-	       !(card->csd.cmdclass & CCC_BLOCK_WRITE);
+	       !(card->csd.cmdclass & CCC_BLOCK_WRITE) ||
+	       mmc_blk_andr36oid_ro(card);
 }
 
 static struct mmc_blk_data *mmc_blk_alloc_req(struct mmc_card *card,

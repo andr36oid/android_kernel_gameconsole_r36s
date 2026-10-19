@@ -747,7 +747,23 @@
         };
 };
 
+/*
+ * The built-in eMMC some clones carry, with their stock OS on it. Off: the
+ * consoles wired like the R36S have their D-pad and rumble on its pins. Boards
+ * with those pins free mark it andr36oid,builtin-emmc, and Kernel Tweaks can
+ * switch it on for a start (dw_mmc_rockchip.builtin_emmc=1, see
+ * dw_mmc-rockchip.c), read-only. Settings as in the Diium D-28S stock DT.
+ */
 &emmc {
+	bus-width = <8>;
+	cap-mmc-highspeed;
+	no-sdio;
+	no-sd;
+	disable-wp;
+	non-removable;
+	pinctrl-names = "default";
+	pinctrl-0 = <&emmc_clk &emmc_cmd &emmc_bus8>;
+	andr36oid,read-only;
 	status = "disabled";
 };
 

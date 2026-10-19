@@ -11,6 +11,8 @@
 #include <linux/platform_device.h>
 #include <linux/clk.h>
 #include <linux/mmc/host.h>
+#include <linux/ctype.h>
+#include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/mmc/slot-gpio.h>
 #include <linux/pm_runtime.h>
@@ -464,6 +466,190 @@ static const struct dev_pm_ops dw_mci_rockchip_dev_pm_ops = {
 			   dw_mci_runtime_resume,
 			   NULL)
 };
+
+#ifndef MODULE
+/*
+ * andr36oid: the built-in eMMC that some clones carry, with their stock OS on
+ * it. The device tree leaves it off; boards with its pins free mark it
+ * andr36oid,builtin-emmc (the consoles wired like the R36S have their D-pad and
+ * rumble on those pins). Kernel Tweaks puts dw_mmc_rockchip.builtin_emmc=1 on the
+ * command line, and before the platform devices are made the node is switched
+ * on here, unless something else in the device tree uses one of its pins. It is
+ * read-only (andr36oid,read-only, see the mmc block driver): only for looking at.
+ */
+static bool builtin_emmc;
+module_param(builtin_emmc, bool, 0444);
+MODULE_PARM_DESC(builtin_emmc, "Switch on the console's built-in eMMC, read-only");
+
+#define EMMC_MAX_PINS	16
+
+struct emmc_pins {
+	int n;
+	u32 bank[EMMC_MAX_PINS];
+	u32 pin[EMMC_MAX_PINS];
+};
+
+static bool emmc_pins_has(const struct emmc_pins *p, u32 bank, u32 pin)
+{
+	int i;
+
+	for (i = 0; i < p->n; i++)
+		if (p->bank[i] == bank && p->pin[i] == pin)
+			return true;
+	return false;
+}
+
+/*
+ * the pins a pinctrl group muxes (rockchip,pins: bank pin func conf): added to
+ * out, or true as soon as one is in check
+ */
+static bool emmc_group_pins(struct device_node *grp, struct emmc_pins *out,
+			    const struct emmc_pins *check)
+{
+	int n = of_property_count_u32_elems(grp, "rockchip,pins");
+	u32 bank, pin;
+	int i;
+
+	for (i = 0; i + 3 < n; i += 4) {
+		if (of_property_read_u32_index(grp, "rockchip,pins", i, &bank) ||
+		    of_property_read_u32_index(grp, "rockchip,pins", i + 1, &pin))
+			continue;
+		if (check && emmc_pins_has(check, bank, pin))
+			return true;
+		if (out && out->n < EMMC_MAX_PINS) {
+			out->bank[out->n] = bank;
+			out->pin[out->n] = pin;
+			out->n++;
+		}
+	}
+	return false;
+}
+
+/* the node and every parent are switched on, so the node is in use */
+static bool emmc_node_used(struct device_node *np)
+{
+	for (; np; np = np->parent)
+		if (!of_device_is_available(np))
+			return false;
+	return true;
+}
+
+static bool emmc_gpio_prop(const char *name)
+{
+	size_t len = strlen(name);
+
+	return !strcmp(name, "gpio") || !strcmp(name, "gpios") ||
+	       (len > 6 && !strcmp(name + len - 6, "-gpios")) ||
+	       (len > 5 && !strcmp(name + len - 5, "-gpio"));
+}
+
+/* the first switched-on node other than the eMMC that uses one of its pins */
+static struct device_node *emmc_pin_user(struct device_node *emmc,
+					 const struct emmc_pins *pins,
+					 const char **what)
+{
+	struct device_node *np;
+	struct property *prop;
+
+	for_each_of_allnodes(np) {
+		if (np == emmc || !emmc_node_used(np))
+			continue;
+		for_each_property_of_node(np, prop) {
+			int i, count;
+
+			if (!strncmp(prop->name, "pinctrl-", 8) &&
+			    isdigit(prop->name[8])) {
+				for (i = 0; ; i++) {
+					struct device_node *grp =
+						of_parse_phandle(np, prop->name, i);
+					bool hit;
+
+					if (!grp)
+						break;
+					hit = emmc_group_pins(grp, NULL, pins);
+					of_node_put(grp);
+					if (hit) {
+						*what = prop->name;
+						return of_node_get(np);
+					}
+				}
+			} else if (emmc_gpio_prop(prop->name)) {
+				count = of_count_phandle_with_args(np, prop->name,
+								   "#gpio-cells");
+				for (i = 0; i < count; i++) {
+					struct of_phandle_args args;
+					u32 bank;
+					bool hit;
+
+					if (of_parse_phandle_with_args(np, prop->name,
+							"#gpio-cells", i, &args))
+						continue;
+					hit = args.args_count > 0 &&
+					      of_device_is_compatible(args.np,
+							"rockchip,gpio-bank") &&
+					      sscanf(args.np->name, "gpio%u", &bank) == 1 &&
+					      emmc_pins_has(pins, bank, args.args[0]);
+					of_node_put(args.np);
+					if (hit) {
+						*what = prop->name;
+						return of_node_get(np);
+					}
+				}
+			}
+		}
+	}
+	return NULL;
+}
+
+static int __init dw_mci_rockchip_builtin_emmc(void)
+{
+	static struct property okay = {
+		.name = "status",
+		.value = (void *)"okay",
+		.length = sizeof("okay"),
+	};
+	struct emmc_pins pins = { 0 };
+	struct device_node *emmc, *grp, *user;
+	const char *what = "";
+	int i;
+
+	if (!builtin_emmc)
+		return 0;
+	emmc = of_find_node_with_property(NULL, "andr36oid,builtin-emmc");
+	if (!emmc) {
+		pr_info("andr36oid: this console's device tree has no built-in eMMC to switch on\n");
+		return 0;
+	}
+	if (!of_property_read_bool(emmc, "andr36oid,read-only")) {
+		pr_warn("andr36oid: built-in eMMC %pOF isn't marked read-only, left off\n", emmc);
+		goto out;
+	}
+	for (i = 0; (grp = of_parse_phandle(emmc, "pinctrl-0", i)); i++) {
+		emmc_group_pins(grp, &pins, NULL);
+		of_node_put(grp);
+	}
+	if (!pins.n) {
+		pr_warn("andr36oid: built-in eMMC %pOF has no pins, left off\n", emmc);
+		goto out;
+	}
+	user = emmc_pin_user(emmc, &pins, &what);
+	if (user) {
+		pr_warn("andr36oid: built-in eMMC left off, %pOF uses its pins (%s)\n",
+			user, what);
+		of_node_put(user);
+		goto out;
+	}
+	if (of_update_property(emmc, &okay))
+		pr_warn("andr36oid: built-in eMMC %pOF couldn't be switched on\n", emmc);
+	else
+		pr_info("andr36oid: built-in eMMC %pOF switched on, read-only\n", emmc);
+out:
+	of_node_put(emmc);
+	return 0;
+}
+/* before of_platform_default_populate_init (arch_initcall_sync) makes the devices */
+arch_initcall(dw_mci_rockchip_builtin_emmc);
+#endif
 
 static struct platform_driver dw_mci_rockchip_pltfm_driver = {
 	.probe		= dw_mci_rockchip_probe,

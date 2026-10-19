@@ -245,3 +245,21 @@
 		<3 RK_PC6 RK_FUNC_GPIO &pcfg_pull_up>,
 		<3 RK_PD3 RK_FUNC_GPIO &pcfg_pull_up>;
 };
+
+/*
+ * The eMMC pins are free on these boards: Kernel Tweaks can switch the built-in
+ * eMMC on, read-only (see rk3326-r36s-android.dtsi). Fixed numbers, so the SD
+ * card stays mmcblk0 and the second slot mmcblk1 with the eMMC there too (vold
+ * only takes those two, the eMMC is mmcblk2 and left alone).
+ */
+/ {
+	aliases {
+		mmc0 = &sdmmc;
+		mmc1 = &sdio;
+		mmc2 = &emmc;
+	};
+};
+
+&emmc {
+	andr36oid,builtin-emmc;
+};
