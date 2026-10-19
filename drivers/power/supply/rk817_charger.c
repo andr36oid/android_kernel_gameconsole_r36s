@@ -318,6 +318,8 @@ struct rk817_charger {
 	u8 usb_in;
 	u8 otg_in;
 	u8 dc_in;
+	/* andr36oid: interrupt counts for the charging diagnostics screen */
+	atomic_t plugin_irqs, plugout_irqs, dc_det_irqs;
 	u8 prop_status;
 
 	u32 max_input_current;
@@ -966,6 +968,7 @@ static irqreturn_t rk817_charge_dc_det_isr(int irq, void *charger)
 {
 	struct rk817_charger *charge = (struct rk817_charger *)charger;
 
+	atomic_inc(&charge->dc_det_irqs);
 	if (gpio_get_value(charge->pdata->dc_det_pin))
 		irq_set_irq_type(irq, IRQF_TRIGGER_LOW);
 	else
@@ -1488,9 +1491,51 @@ static ssize_t charge_current_default_ma_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(charge_current_default_ma);
 
+/*
+ * andr36oid: one key=value per line for the charging diagnostics screen and
+ * the problem report: what the PMIC and the detect pin see right now, and how
+ * often each plug interrupt fired since boot.
+ */
+static ssize_t andr36oid_diag_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct rk817_charger *charge = dev_get_drvdata(dev);
+	static const u8 regs[] = { 0xb4, 0xe4, 0xe5, 0xe6, 0xeb, 0xec };
+	unsigned int v;
+	int i, n = 0;
+
+	n += sprintf(buf + n, "usb_in=%d\ndc_in=%d\notg_in=%d\notg5v=%d\n",
+		     charge->usb_in, charge->dc_in, charge->otg_in,
+		     rk817_charge_get_otg_state(charge));
+	n += sprintf(buf + n, "plug_in=%d\nchg_sts=%d\n",
+		     rk817_charge_get_plug_in_status(charge),
+		     rk817_charge_field_read(charge, CHG_STS));
+	n += sprintf(buf + n, "dc_det_pin=%d\ndc_det_mode=%s\n",
+		     gpio_is_valid(charge->pdata->dc_det_pin) ?
+		     gpio_get_value(charge->pdata->dc_det_pin) : -1,
+		     dc_det_modes[dc_det_mode]);
+	n += sprintf(buf + n, "boost_only_for_otg=%d\n",
+		     charge->pdata->boost_only_for_otg);
+	n += sprintf(buf + n, "irq_plug_in=%d\nirq_plug_out=%d\nirq_dc_det=%d\n",
+		     atomic_read(&charge->plugin_irqs),
+		     atomic_read(&charge->plugout_irqs),
+		     atomic_read(&charge->dc_det_irqs));
+	n += sprintf(buf + n, "charge_ma=%u\ninput_ma=%u\n",
+		     charge->max_chrg_current, charge->max_input_current);
+	for (i = 0; i < ARRAY_SIZE(regs); i++) {
+		if (regmap_read(charge->regmap, regs[i], &v))
+			n += sprintf(buf + n, "reg_%02x=err\n", regs[i]);
+		else
+			n += sprintf(buf + n, "reg_%02x=%02x\n", regs[i], v);
+	}
+	return n;
+}
+static DEVICE_ATTR_RO(andr36oid_diag);
+
 static struct attribute *rk817_charge_speed_attrs[] = {
 	&dev_attr_charge_current_ma.attr,
 	&dev_attr_charge_current_default_ma.attr,
+	&dev_attr_andr36oid_diag.attr,
 	NULL,
 };
 
@@ -1709,6 +1754,7 @@ static irqreturn_t rk817_plug_in_isr(int irq, void *cg)
 	struct rk817_charger *charge;
 
 	charge = (struct rk817_charger *)cg;
+	atomic_inc(&charge->plugin_irqs);
 	charge->plugin_trigger = 1;
 	/* awake until the charger type is known and Android has seen it */
 	pm_wakeup_event(charge->dev, 3000);
@@ -1723,6 +1769,7 @@ static irqreturn_t rk817_plug_out_isr(int irq, void *cg)
 	struct rk817_charger *charge;
 
 	charge = (struct rk817_charger *)cg;
+	atomic_inc(&charge->plugout_irqs);
 	charge->plugout_trigger = 1;
 	/* awake until the charger type is known and Android has seen it */
 	pm_wakeup_event(charge->dev, 3000);
