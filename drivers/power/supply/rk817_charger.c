@@ -898,6 +898,24 @@ static void rk817_charge_set_chrg_param(struct rk817_charger *charge,
 	}
 }
 
+/*
+ * andr36oid: the PMIC's boost/OTG and charger registers, for consoles that
+ * see a charger but take no power from it
+ */
+static void rk817_charge_log_regs(struct rk817_charger *charge, const char *why)
+{
+	static const u8 regs[] = { 0xb4, 0xe4, 0xe5, 0xe6, 0xeb, 0xec };
+	unsigned int v[ARRAY_SIZE(regs)];
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(regs); i++)
+		if (regmap_read(charge->regmap, regs[i], &v[i]))
+			v[i] = 0xfff;
+	dev_info(charge->dev, "PMIC (%s): b4=%02x e4=%02x e5=%02x e6=%02x eb=%02x ec=%02x otg5v %d\n",
+		 why, v[0], v[1], v[2], v[3], v[4], v[5],
+		 rk817_charge_get_otg_state(charge));
+}
+
 static void rk817_charge_set_otg_state(struct rk817_charger *charge, int state)
 {
 	switch (state) {
@@ -916,6 +934,7 @@ static void rk817_charge_set_otg_state(struct rk817_charger *charge, int state)
 			disable_irq(charge->plugin_irq);
 			disable_irq(charge->plugout_irq);
 			DBG("enable otg5v\n");
+			rk817_charge_log_regs(charge, "OTG 5 V on");
 		}
 		break;
 
@@ -934,6 +953,7 @@ static void rk817_charge_set_otg_state(struct rk817_charger *charge, int state)
 			enable_irq(charge->plugin_irq);
 			enable_irq(charge->plugout_irq);
 			DBG("disable otg5v\n");
+			rk817_charge_log_regs(charge, "OTG 5 V off");
 		}
 		break;
 	default:
@@ -1037,6 +1057,7 @@ static void rk817_charge_dc_det_worker(struct work_struct *work)
 		 rk817_charge_get_plug_in_status(charge),
 		 rk817_charge_field_read(charge, CHG_STS),
 		 charger == DC_TYPE_DC_CHARGER ? "in" : "out");
+	rk817_charge_log_regs(charge, "DC check");
 	/*
 	 * with "power", the pin can change before the PMIC sees the power:
 	 * look again for 2 s
@@ -1132,7 +1153,7 @@ static void rk817_charge_host_evt_worker(struct work_struct *work)
 
 	/* Determine cable/charger type */
 	if (extcon_get_state(edev, EXTCON_USB_VBUS_EN) > 0) {
-		DBG("receive type-c notifier event: OTG ON...\n");
+		dev_info(charge->dev, "USB port asks for OTG 5 V (dc_in %d)\n", charge->dc_in);
 		if (charge->dc_in && charge->pdata->power_dc2otg) {
 			if (charge->otg_in)
 				rk817_charge_set_otg_state(charge,
@@ -1143,7 +1164,7 @@ static void rk817_charge_host_evt_worker(struct work_struct *work)
 		}
 		rk817_charge_set_otg_in(charge, ONLINE);
 	} else if (extcon_get_state(edev, EXTCON_USB_VBUS_EN) == 0) {
-		DBG("receive type-c notifier event: OTG OFF...\n");
+		dev_info(charge->dev, "USB port no longer asks for OTG 5 V\n");
 		rk817_charge_set_otg_state(charge, USB_OTG_POWER_OFF);
 		rk817_charge_set_otg_in(charge, OFFLINE);
 	}
