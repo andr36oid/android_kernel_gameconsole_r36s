@@ -481,6 +481,24 @@ static bool builtin_emmc;
 module_param(builtin_emmc, bool, 0444);
 MODULE_PARM_DESC(builtin_emmc, "Switch on the console's built-in eMMC, read-only");
 
+/*
+ * Its speed (Kernel Tweaks > eMMC speed): hs is high speed, 52 MHz (the stock
+ * DT's, ~40 MB/s on the D-28S), ddr52 the same clock on both edges (~75 MB/s),
+ * hs200 up to max-frequency where the chip has it. The device tree allows
+ * ddr52 and hs200; the slower ones take those out.
+ */
+static char *emmc_speed = "ddr52";
+module_param(emmc_speed, charp, 0444);
+MODULE_PARM_DESC(emmc_speed, "Built-in eMMC speed: hs, ddr52 or hs200");
+
+static void emmc_drop_prop(struct device_node *np, const char *name)
+{
+	struct property *prop = of_find_property(np, name, NULL);
+
+	if (prop)
+		of_remove_property(np, prop);
+}
+
 #define EMMC_MAX_PINS	16
 
 struct emmc_pins {
@@ -639,10 +657,18 @@ static int __init dw_mci_rockchip_builtin_emmc(void)
 		of_node_put(user);
 		goto out;
 	}
+	if (!strcmp(emmc_speed, "hs")) {
+		emmc_drop_prop(emmc, "mmc-ddr-1_8v");
+		emmc_drop_prop(emmc, "mmc-hs200-1_8v");
+	} else if (strcmp(emmc_speed, "hs200")) {
+		emmc_speed = "ddr52";
+		emmc_drop_prop(emmc, "mmc-hs200-1_8v");
+	}
 	if (of_update_property(emmc, &okay))
 		pr_warn("andr36oid: built-in eMMC %pOF couldn't be switched on\n", emmc);
 	else
-		pr_info("andr36oid: built-in eMMC %pOF switched on, read-only\n", emmc);
+		pr_info("andr36oid: built-in eMMC %pOF switched on, read-only, speed %s\n",
+			emmc, emmc_speed);
 out:
 	of_node_put(emmc);
 	return 0;

@@ -768,7 +768,8 @@
 	 * DDR52: data on both clock edges, about twice the stock DT's high speed
 	 * mode (~40 vs ~75 MB/s on the D-28S). Its pins run at 1.8 V already
 	 * (vccio6). HS200 (up to max-frequency, 150 MHz) where the chip has it;
-	 * chips without it stay at DDR52.
+	 * chips without it stay at DDR52. Kernel Tweaks > eMMC speed picks one,
+	 * DDR52 by default (dw_mmc_rockchip.emmc_speed, see dw_mmc-rockchip.c).
 	 */
 	mmc-ddr-1_8v;
 	mmc-hs200-1_8v;
