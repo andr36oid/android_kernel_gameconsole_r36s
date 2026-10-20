@@ -16,6 +16,39 @@
 	model = "Diium D-28S (EE clone, K36 board, 480x640 panel)";
 };
 
+/*
+ * One USB-C port for charging and accessories (labelled DC/OTG), unlike the
+ * R36S with its separate charge port. The common setup keeps the OTG port a
+ * host with 5 V always on, which puts the console's 5 V against the charger:
+ * it charged only while switched off. Like the stock firmware: the ID pin
+ * picks host or device, and the charger turns the 5 V on only for a host
+ * (EXTCON_USB_VBUS_EN to otg_switch).
+ */
+&u2phy_otg {
+	/delete-property/ rockchip,vbus-always-on;
+	/delete-property/ rockchip,no-vbus-en-extcon;
+	/delete-property/ rockchip,host-while-charging;
+	/delete-property/ rockchip,default-otg-mode;
+};
+
+&otg_switch {
+	/delete-property/ regulator-boot-on;
+};
+
+/*
+ * The port's USB-C role seems to follow the board's 5 V: with the PMIC's boost
+ * on, it tells a charger it is a power source, so the charger never turns its
+ * 5 V on (the detect pin, the PMIC and the phy saw nothing; switched off it
+ * charges). So the boost is only on while an OTG device asks for power: the
+ * charger driver enables otg_switch then, which enables the boost behind it.
+ * 4.7 V like stock.
+ */
+&dcdc_boost {
+	/delete-property/ regulator-always-on;
+	/delete-property/ regulator-boot-on;
+	regulator-min-microvolt = <4700000>;
+};
+
 &dsi {
 	panel@0 {
 		prepare-delay-ms = <20>;
@@ -113,4 +146,32 @@
 &joypad {
 	/* no analog sticks, so no stick clicks (handhelds.wiki) */
 	andr36oid,missing-buttons = "l3", "r3";
+	/* and no stick axes: the unused ADC inputs float and sent ghost moves */
+	andr36oid,no-sticks;
+};
+
+&rk817 {
+	charger {
+		/* see &dcdc_boost: the boost only runs for an OTG device */
+		andr36oid,boost-only-for-otg;
+	};
+};
+
+/*
+ * One port for charging and OTG. GPIO3_A4 (vcc_host) puts the port in host mode:
+ * OTG devices are seen and get 5 V, and the charge input is cut. Low, it charges
+ * and no OTG device is seen. It never changes by itself (an input in stock,
+ * usb_id_gpio). On from early boot as on the other EE boards; the charger
+ * driver switches it off while a charger is in. OTG devices are only seen one
+ * way round: the port has no USB-C controller.
+ */
+&vcc_host {
+	/delete-property/ regulator-always-on;
+	regulator-boot-on;
+};
+
+&rk817 {
+	charger {
+		andr36oid,usb-host-supply = <&vcc_host>;
+	};
 };

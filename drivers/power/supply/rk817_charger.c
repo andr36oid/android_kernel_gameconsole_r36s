@@ -279,6 +279,12 @@ struct charger_platform_data {
 	u32 dc_det_level;
 	/* andr36oid,dc-det-needs-power: the detect pin alone can't be trusted */
 	bool dc_det_needs_power;
+	/*
+	 * andr36oid,boost-only-for-otg: one port for charging and OTG, fed
+	 * straight from the boost; the boost runs only while an OTG device
+	 * asks for 5 V
+	 */
+	bool boost_only_for_otg;
 	int dc_det_pin;
 	bool support_dc_det;
 	int virtual_power;
@@ -341,6 +347,9 @@ struct rk817_charger {
 	int plugout_irq;
 	/* held while a charger is in: no deep sleep on the charger */
 	struct wakeup_source *charging_ws;
+	/* andr36oid,usb-host-supply: on = host mode, off = charge mode */
+	struct regulator *usb_host_reg;
+	int usb_mode_host;
 	/* charge_current_ma in sysfs: 0 = the DT's max_chrg_current */
 	u32 user_chrg_current;
 };
@@ -800,9 +809,33 @@ static int rk817_charge_get_dsoc(struct rk817_charger *charge)
 	return soc_save / 1000;
 }
 
+/*
+ * andr36oid: consoles with one USB-C port for charging and OTG (Diium D-28S) have
+ * a pin that puts the port in host mode: OTG devices are seen and powered, and the
+ * charge input is cut. So host mode unless a charger is in, and always while an
+ * OTG device is in (its own 5 V must not count as a charger). Without the DT
+ * property nothing happens here.
+ */
+static void rk817_charge_set_usb_mode(struct rk817_charger *charge)
+{
+	int host;
+
+	if (!charge->usb_host_reg)
+		return;
+	host = charge->otg_in || !charge->dc_in;
+	if (host == charge->usb_mode_host)
+		return;
+	charge->usb_mode_host = host;
+	if (host ? regulator_enable(charge->usb_host_reg) :
+		   regulator_disable(charge->usb_host_reg))
+		dev_err(charge->dev, "USB port mode not switched\n");
+	dev_info(charge->dev, "USB port in %s mode\n", host ? "host (OTG)" : "charge");
+}
+
 static void rk817_charge_set_otg_in(struct rk817_charger *charge, int online)
 {
 	charge->otg_in = online;
+	rk817_charge_set_usb_mode(charge);
 }
 
 static void rk817_charge_dump_regs(struct rk817_charger *charge, const char *why);
@@ -890,6 +923,8 @@ static void rk817_charge_set_chrg_param(struct rk817_charger *charge,
 	if (rk817_charge_online(charge) && rk817_charge_get_dsoc(charge) == 100)
 		charge->prop_status = POWER_SUPPLY_STATUS_FULL;
 
+	rk817_charge_set_usb_mode(charge);
+
 	/*
 	 * andr36oid: on the charger Android wakes every 60 s to check the
 	 * battery, and one of those deep sleeps sometimes never wakes again
@@ -950,6 +985,8 @@ static void rk817_charge_set_otg_state(struct rk817_charger *charge, int state)
 			DBG("otg5v is on yet, ignore..\n");
 		} else {
 
+			if (charge->pdata->boost_only_for_otg)
+				rk817_charge_boost_enable(charge);
 			if (!rk817_charge_get_otg_state(charge)) {
 				rk817_charge_otg_enable(charge);
 				if (!rk817_charge_get_otg_state(charge)) {
@@ -976,6 +1013,8 @@ static void rk817_charge_set_otg_state(struct rk817_charger *charge, int state)
 					return;
 				}
 			}
+			if (charge->pdata->boost_only_for_otg)
+				rk817_charge_boost_disable(charge);
 			enable_irq(charge->plugin_irq);
 			enable_irq(charge->plugout_irq);
 			DBG("disable otg5v\n");
@@ -1110,7 +1149,13 @@ static void rk817_charge_dc_det_worker(struct work_struct *work)
 	} else {
 		DBG("detect dc charger out..\n");
 		rk817_charge_set_chrg_param(charge, DC_TYPE_NONE_CHARGER);
-		rk817_charge_boost_enable(charge);
+		/*
+		 * Not with boost-only-for-otg: with "pin and power" the first
+		 * check after a plug-in comes before the PMIC's flag, and the
+		 * boost on made the charger cut its 5 V right away.
+		 */
+		if (!charge->pdata->boost_only_for_otg || charge->otg_in)
+			rk817_charge_boost_enable(charge);
 		/* check otg supply, power on anyway */
 		if (charge->otg_in)
 			rk817_charge_set_otg_state(charge, USB_OTG_POWER_ON);
@@ -1725,6 +1770,8 @@ static int rk817_charge_parse_dt(struct rk817_charger *charge)
 	}
 	pdata->dc_det_needs_power =
 		of_property_read_bool(np, "andr36oid,dc-det-needs-power");
+	pdata->boost_only_for_otg =
+		of_property_read_bool(np, "andr36oid,boost-only-for-otg");
 
 	DBG("input_current:%d\n"
 		"input_min_voltage: %d\n"
@@ -1907,7 +1954,30 @@ static int rk817_charge_probe(struct platform_device *pdev)
 	}
 	rk817_charge_get_otg5v_regulator(charge);
 
+	/*
+	 * Host mode from early on (regulator-boot-on, before the USB PHY starts:
+	 * raised only here, after it, OTG devices went unseen); the first charger
+	 * check switches to charge mode if a charger is in.
+	 */
+	charge->usb_host_reg = devm_regulator_get_optional(charge->dev,
+							   "andr36oid,usb-host");
+	if (IS_ERR(charge->usb_host_reg)) {
+		if (PTR_ERR(charge->usb_host_reg) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
+		charge->usb_host_reg = NULL;
+	} else if (regulator_enable(charge->usb_host_reg)) {
+		dev_err(charge->dev, "USB port host mode not switched on\n");
+		charge->usb_host_reg = NULL;
+	} else {
+		charge->usb_mode_host = 1;
+	}
+
 	rk817_charge_pre_init(charge);
+	if (charge->pdata->boost_only_for_otg && !charge->otg_in) {
+		/* the boot loader left it on; a charger saw a power source */
+		rk817_charge_boost_disable(charge);
+		rk817_charge_log_regs(charge, "boost off until OTG");
+	}
 
 	/* Settings > Battery > Battery details > Charging speed */
 	if (devm_device_add_group(charge->dev, &rk817_charge_speed_group))

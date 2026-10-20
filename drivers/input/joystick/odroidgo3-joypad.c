@@ -174,6 +174,8 @@ struct joypad {
 	bool invert_absy;
 	bool invert_absrx;
 	bool invert_absry;
+	/* andr36oid,no-sticks: a board without sticks, no stick axes at all */
+	bool no_sticks;
 	/* left and right stick reported as each other (stick_swap) */
 	bool stick_swap;
 	
@@ -1221,6 +1223,10 @@ static void joypad_adc_check(struct input_polled_dev *poll_dev)
 	cal = joypad->cal;
 	mutex_unlock(&joypad->lock);
 
+	/* the floating ADC inputs would only report ghost stick moves */
+	if (joypad->no_sticks)
+		return;
+
 	for (nbtn = 0; nbtn < joypad->amux_count; nbtn++) {
 		struct bt_adc *adc = &joypad->adcs[nbtn];
 
@@ -1367,7 +1373,7 @@ static void joypad_open(struct input_polled_dev *poll_dev)
 		struct bt_gpio *gpio = &joypad->gpios[nbtn];
 		gpio->old_value = gpio->active_level ? 0 : 1;
 	}
-	for (nbtn = 0; nbtn < joypad->amux_count; nbtn++) {
+	for (nbtn = 0; !joypad->no_sticks && nbtn < joypad->amux_count; nbtn++) {
 		struct bt_adc *adc = &joypad->adcs[nbtn];
 
 		adc->value = joypad_adc_read(joypad->amux, adc);
@@ -1910,8 +1916,9 @@ static int joypad_input_setup(struct device *dev, struct joypad *joypad)
 	input->id.version = (u16)joypad_revision;
 
 	/* IIO ADC key setup (0 mv ~ 1800 mv) * adc->scale */
-	__set_bit(EV_ABS, input->evbit);
-	for(nbtn = 0; nbtn < joypad->amux_count; nbtn++) {
+	if (!joypad->no_sticks)
+		__set_bit(EV_ABS, input->evbit);
+	for (nbtn = 0; !joypad->no_sticks && nbtn < joypad->amux_count; nbtn++) {
 		struct bt_adc *adc = &joypad->adcs[nbtn];
 		input_set_abs_params(input, adc->report_type,
 				adc->min, adc->max,
@@ -2041,6 +2048,13 @@ static int joypad_dt_parse(struct device *dev, struct joypad *joypad)
 	joypad->invert_absy = device_property_present(dev, "invert-absy");
 	joypad->invert_absrx = device_property_present(dev, "invert-absrx");
 	joypad->invert_absry = device_property_present(dev, "invert-absry");
+	/*
+	 * Boards without sticks still have amux-count and the ADC wiring (older
+	 * kernels need them), so this switches the sticks off instead
+	 */
+	joypad->no_sticks = device_property_present(dev, "andr36oid,no-sticks");
+	if (joypad->no_sticks)
+		dev_info(dev, "no sticks on this board, not reporting any\n");
 	dev_info(dev, "%s : invert-absx = %d, inveret-absy = %d, invert-absrx = %d, inveret-absry = %d\n",
 		__func__, joypad->invert_absx, joypad->invert_absy, joypad->invert_absrx, joypad->invert_absry);
 
