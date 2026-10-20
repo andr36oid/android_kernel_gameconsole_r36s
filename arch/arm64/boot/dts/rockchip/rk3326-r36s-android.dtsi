@@ -779,6 +779,14 @@
 	non-removable;
 	pinctrl-names = "default";
 	pinctrl-0 = <&emmc_clk &emmc_cmd &emmc_bus8>;
+	/*
+	 * Some boards also need the controller's power-enable (GPIO1_B0) and
+	 * reset (GPIO1_B3) pins, as in the G80CA DT of dArkOSRE: their eMCP stays
+	 * unpowered without them and holds its data line low ("Busy" in the
+	 * kernel log). Kernel Tweaks > eMMC power pins uses these instead
+	 * (dw_mmc_rockchip.emmc_power, see dw_mmc-rockchip.c).
+	 */
+	andr36oid,power-pinctrl = <&emmc_clk &emmc_cmd &emmc_pwren &emmc_rstnout &emmc_bus8>;
 	andr36oid,read-only;
 	status = "disabled";
 };

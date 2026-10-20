@@ -494,6 +494,15 @@ static char *emmc_speed = "ddr52";
 module_param(emmc_speed, charp, 0444);
 MODULE_PARM_DESC(emmc_speed, "Built-in eMMC speed: hs, ddr52 or hs200");
 
+/*
+ * eMMC power pins (Kernel Tweaks): the pin set in andr36oid,power-pinctrl,
+ * which adds the controller's power-enable and reset pins, instead of
+ * pinctrl-0. Some boards switch their eMCP's power with that pin.
+ */
+static bool emmc_power;
+module_param(emmc_power, bool, 0444);
+MODULE_PARM_DESC(emmc_power, "Built-in eMMC: also its power-enable and reset pins");
+
 static void emmc_drop_prop(struct device_node *np, const char *name)
 {
 	struct property *prop = of_find_property(np, name, NULL);
@@ -650,6 +659,19 @@ static int __init dw_mci_rockchip_builtin_emmc(void)
 		pr_warn("andr36oid: built-in eMMC %pOF isn't marked read-only, left off\n", emmc);
 		goto out;
 	}
+	if (emmc_power) {
+		static struct property pins = { .name = "pinctrl-0" };
+		struct property *alt = of_find_property(emmc, "andr36oid,power-pinctrl", NULL);
+
+		if (alt) {
+			pins.value = alt->value;
+			pins.length = alt->length;
+			of_update_property(emmc, &pins);
+		} else {
+			pr_warn("andr36oid: built-in eMMC %pOF has no power pins in its device tree\n",
+				emmc);
+		}
+	}
 	for (i = 0; (grp = of_parse_phandle(emmc, "pinctrl-0", i)); i++) {
 		emmc_group_pins(grp, &pins, NULL);
 		of_node_put(grp);
@@ -677,9 +699,9 @@ static int __init dw_mci_rockchip_builtin_emmc(void)
 	if (of_update_property(emmc, &okay))
 		pr_warn("andr36oid: built-in eMMC %pOF couldn't be switched on\n", emmc);
 	else
-		pr_info("andr36oid: built-in eMMC %pOF switched on, %s, speed %s\n",
+		pr_info("andr36oid: built-in eMMC %pOF switched on, %s, speed %s%s\n",
 			emmc, system ? "system (bootloader area read-only)" : "read-only",
-			emmc_speed);
+			emmc_speed, emmc_power ? ", with power pins" : "");
 out:
 	of_node_put(emmc);
 	return 0;
