@@ -2994,7 +2994,13 @@ static int mmc_blk_probe(struct mmc_card *card)
 	dev_set_drvdata(&card->dev, md);
 
 #if IS_ENABLED(CONFIG_MMC_DW_ROCKCHIP) || IS_ENABLED(CONFIG_MMC_SDHCI_OF_ARASAN)
-	if (card->host->restrict_caps & RESTRICT_CARD_TYPE_EMMC)
+	/*
+	 * andr36oid: not a read-only built-in eMMC. this_card is what Rockchip's
+	 * vendor storage reads and writes with raw requests (rk_sdmmc_ops.c),
+	 * past the read-only checks above.
+	 */
+	if (card->host->restrict_caps & RESTRICT_CARD_TYPE_EMMC &&
+	    !mmc_blk_andr36oid_ro(card))
 		this_card = card;
 #endif
 

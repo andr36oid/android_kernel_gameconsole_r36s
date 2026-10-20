@@ -756,19 +756,19 @@
  */
 &emmc {
 	bus-width = <8>;
+	/*
+	 * Rockchip's MMC core only looks for a card type the DT names
+	 * (supports-emmc), no-sd and no-sdio aren't enough: without it the chip
+	 * was never even asked.
+	 */
+	supports-emmc;
 	cap-mmc-highspeed;
 	no-sdio;
 	no-sd;
 	disable-wp;
 	non-removable;
 	pinctrl-names = "default";
-	/*
-	 * Also the power enable and reset outputs. The stock DT leaves them out,
-	 * likely because the stock U-Boot on the eMMC set them up already; ours
-	 * starts from the SD card, and with only the other pins the chip didn't
-	 * answer at all (Diium D-28S).
-	 */
-	pinctrl-0 = <&emmc_clk &emmc_cmd &emmc_bus8 &emmc_pwren &emmc_rstnout>;
+	pinctrl-0 = <&emmc_clk &emmc_cmd &emmc_bus8>;
 	andr36oid,read-only;
 	status = "disabled";
 };
