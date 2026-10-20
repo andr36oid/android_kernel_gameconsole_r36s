@@ -753,7 +753,7 @@
  * with those pins free mark it andr36oid,builtin-emmc, and Kernel Tweaks can
  * switch it on for a start (dw_mmc_rockchip.builtin_emmc=1, see
  * dw_mmc-rockchip.c), read-only. Settings as in the Diium D-28S stock DT,
- * plus the two below.
+ * plus supports-emmc and the faster modes below.
  */
 &emmc {
 	bus-width = <8>;
@@ -766,9 +766,12 @@
 	cap-mmc-highspeed;
 	/*
 	 * DDR52: data on both clock edges, about twice the stock DT's high speed
-	 * mode (~40 MB/s on the D-28S). Its pins run at 1.8 V already (vccio6).
+	 * mode (~40 vs ~75 MB/s on the D-28S). Its pins run at 1.8 V already
+	 * (vccio6). HS200 (up to max-frequency, 150 MHz) where the chip has it;
+	 * chips without it stay at DDR52.
 	 */
 	mmc-ddr-1_8v;
+	mmc-hs200-1_8v;
 	no-sdio;
 	no-sd;
 	disable-wp;
