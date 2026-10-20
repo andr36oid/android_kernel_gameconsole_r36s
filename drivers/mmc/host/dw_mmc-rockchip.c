@@ -476,10 +476,13 @@ static const struct dev_pm_ops dw_mci_rockchip_dev_pm_ops = {
  * command line, and before the platform devices are made the node is switched
  * on here, unless something else in the device tree uses one of its pins. It is
  * read-only (andr36oid,read-only, see the mmc block driver): only for looking at.
+ * builtin_emmc=system is for andr36oid installed on the eMMC (its own boot.ini
+ * sets it): read-write except the bootloader area, see the mmc block driver.
  */
-static bool builtin_emmc;
-module_param(builtin_emmc, bool, 0444);
-MODULE_PARM_DESC(builtin_emmc, "Switch on the console's built-in eMMC, read-only");
+static char *builtin_emmc = "";
+module_param(builtin_emmc, charp, 0444);
+MODULE_PARM_DESC(builtin_emmc,
+		 "Switch on the console's built-in eMMC: 1 read-only, system read-write but its bootloader");
 
 /*
  * Its speed (Kernel Tweaks > eMMC speed): hs is high speed, 52 MHz (the stock
@@ -628,17 +631,22 @@ static int __init dw_mci_rockchip_builtin_emmc(void)
 	};
 	struct emmc_pins pins = { 0 };
 	struct device_node *emmc, *grp, *user;
+	struct property *ro;
 	const char *what = "";
+	bool system;
 	int i;
 
-	if (!builtin_emmc)
+	if (!*builtin_emmc || !strcmp(builtin_emmc, "0") ||
+	    !strcasecmp(builtin_emmc, "n") || !strcmp(builtin_emmc, "off"))
 		return 0;
+	system = !strcmp(builtin_emmc, "system");
 	emmc = of_find_node_with_property(NULL, "andr36oid,builtin-emmc");
 	if (!emmc) {
 		pr_info("andr36oid: this console's device tree has no built-in eMMC to switch on\n");
 		return 0;
 	}
-	if (!of_property_read_bool(emmc, "andr36oid,read-only")) {
+	ro = of_find_property(emmc, "andr36oid,read-only", NULL);
+	if (!ro) {
 		pr_warn("andr36oid: built-in eMMC %pOF isn't marked read-only, left off\n", emmc);
 		goto out;
 	}
@@ -664,11 +672,14 @@ static int __init dw_mci_rockchip_builtin_emmc(void)
 		emmc_speed = "ddr52";
 		emmc_drop_prop(emmc, "mmc-hs200-1_8v");
 	}
+	if (system)
+		of_remove_property(emmc, ro);
 	if (of_update_property(emmc, &okay))
 		pr_warn("andr36oid: built-in eMMC %pOF couldn't be switched on\n", emmc);
 	else
-		pr_info("andr36oid: built-in eMMC %pOF switched on, read-only, speed %s\n",
-			emmc, emmc_speed);
+		pr_info("andr36oid: built-in eMMC %pOF switched on, %s, speed %s\n",
+			emmc, system ? "system (bootloader area read-only)" : "read-only",
+			emmc_speed);
 out:
 	of_node_put(emmc);
 	return 0;

@@ -274,18 +274,115 @@ out_put:
 }
 
 /*
- * andr36oid: a host marked andr36oid,read-only in the device tree (a console's
- * built-in eMMC with its stock OS on it, switched on by Kernel Tweaks, see
- * dw_mmc-rockchip.c) is never written to: the disk and its boot areas are
- * read-only for good (force_ro can't clear that, write opens fail), requests
- * other than reads fail, and raw MMC commands from user space (ioctl) are
- * refused, since those could write too.
+ * andr36oid: a console's built-in eMMC (a host marked andr36oid,builtin-emmc,
+ * switched on by dw_mmc_rockchip.builtin_emmc, see dw_mmc-rockchip.c) is in one
+ * of two modes:
+ *
+ *   read-only (andr36oid,read-only, from Kernel Tweaks): its stock OS is only
+ *   for looking at. The disk is read-only (force_ro can't clear that, write
+ *   opens fail) and requests other than reads fail.
+ *
+ *   system (andr36oid,read-only taken out, andr36oid installed on the eMMC):
+ *   read-write, except the first ANDR36OID_LOADER_END sectors, where the
+ *   partition table and the bootloader (idbloader, U-Boot, trust) are. A
+ *   system on the eMMC never rewrites what starts it.
+ *
+ * In both, its boot areas are never written and raw MMC commands from user
+ * space (ioctl, boot area write protection) are refused, since those could
+ * write anywhere. Only the installer, started from an SD card, writes the
+ * whole disk: as root it unlocks a read-only eMMC by writing "unlock <CID>"
+ * (this chip's, as in device/cid) to andr36oid_unlock on the disk, and "lock"
+ * when done. A restart locks it again; a system eMMC can't be unlocked.
  */
-static bool mmc_blk_andr36oid_ro(struct mmc_card *card)
+#define ANDR36OID_LOADER_END	32768
+
+static bool andr36oid_unlocked;
+
+static bool mmc_blk_andr36oid_emmc(struct mmc_card *card)
 {
 	return card && of_property_read_bool(mmc_dev(card->host)->of_node,
-					     "andr36oid,read-only");
+					     "andr36oid,builtin-emmc");
 }
+
+static bool mmc_blk_andr36oid_ro(struct mmc_card *card)
+{
+	return card && !andr36oid_unlocked &&
+	       of_property_read_bool(mmc_dev(card->host)->of_node,
+				     "andr36oid,read-only");
+}
+
+static bool mmc_blk_andr36oid_refused(struct mmc_blk_data *md,
+				      struct request *req)
+{
+	struct mmc_card *card = md->queue.card;
+
+	if (!mmc_blk_andr36oid_emmc(card))
+		return false;
+	switch (req_op(req)) {
+	case REQ_OP_READ:
+	case REQ_OP_FLUSH:
+	case REQ_OP_DRV_IN:
+		return false;
+	case REQ_OP_DRV_OUT:
+		return true;
+	default:
+		break;
+	}
+	if (md->part_type || mmc_blk_andr36oid_ro(card))
+		return true;
+	if (andr36oid_unlocked)
+		return false;
+	return blk_rq_pos(req) < ANDR36OID_LOADER_END;
+}
+
+static inline int mmc_blk_readonly(struct mmc_card *card);
+
+static ssize_t andr36oid_unlock_show(struct device *dev,
+				     struct device_attribute *attr, char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "%s\n",
+			andr36oid_unlocked ? "unlocked" : "locked");
+}
+
+static ssize_t andr36oid_unlock_store(struct device *dev,
+				      struct device_attribute *attr,
+				      const char *buf, size_t count)
+{
+	struct mmc_blk_data *md = mmc_blk_get(dev_to_disk(dev));
+	struct mmc_card *card;
+	char cid[33];
+	ssize_t ret = count;
+
+	if (!md)
+		return -ENODEV;
+	card = md->queue.card;
+	snprintf(cid, sizeof(cid), "%08x%08x%08x%08x", card->raw_cid[0],
+		 card->raw_cid[1], card->raw_cid[2], card->raw_cid[3]);
+	if (sysfs_streq(buf, "lock")) {
+		if (andr36oid_unlocked)
+			pr_info("%s: andr36oid: built-in eMMC locked\n",
+				md->disk->disk_name);
+		andr36oid_unlocked = false;
+	} else if (!strncmp(buf, "unlock ", 7) && sysfs_streq(buf + 7, cid)) {
+		if (!of_property_read_bool(mmc_dev(card->host)->of_node,
+					   "andr36oid,read-only")) {
+			ret = -EPERM;
+		} else {
+			andr36oid_unlocked = true;
+			pr_warn("%s: andr36oid: built-in eMMC unlocked for writing\n",
+				md->disk->disk_name);
+		}
+	} else {
+		ret = -EINVAL;
+	}
+	md->read_only = mmc_blk_readonly(card);
+	set_disk_ro(md->disk, md->read_only);
+	mmc_blk_put(md);
+	return ret;
+}
+
+static DEVICE_ATTR(andr36oid_unlock, S_IRUSR | S_IWUSR, andr36oid_unlock_show,
+		   andr36oid_unlock_store);
 
 static ssize_t force_ro_show(struct device *dev, struct device_attribute *attr,
 			     char *buf)
@@ -681,7 +778,7 @@ static int mmc_blk_ioctl_cmd(struct mmc_blk_data *md,
 	int err = 0, ioc_err = 0;
 	struct request *req;
 
-	if (mmc_blk_andr36oid_ro(md->queue.card))
+	if (mmc_blk_andr36oid_emmc(md->queue.card))
 		return -EROFS;
 
 	idata = mmc_blk_ioctl_copy_from_user(ic_ptr);
@@ -735,7 +832,7 @@ static int mmc_blk_ioctl_multi_cmd(struct mmc_blk_data *md,
 	__u64 num_of_cmds;
 	struct request *req;
 
-	if (mmc_blk_andr36oid_ro(md->queue.card))
+	if (mmc_blk_andr36oid_emmc(md->queue.card))
 		return -EROFS;
 
 	if (copy_from_user(&num_of_cmds, &user->num_of_cmds,
@@ -2254,9 +2351,8 @@ enum mmc_issued mmc_blk_mq_issue_rq(struct mmc_queue *mq, struct request *req)
 	struct mmc_host *host = card->host;
 	int ret;
 
-	/* andr36oid: only reads on a read-only built-in eMMC (see above) */
-	if (mmc_blk_andr36oid_ro(card) && req_op(req) != REQ_OP_READ &&
-	    req_op(req) != REQ_OP_FLUSH && req_op(req) != REQ_OP_DRV_IN)
+	/* andr36oid: what a built-in eMMC takes (see above) */
+	if (mmc_blk_andr36oid_refused(md, req))
 		return MMC_REQ_FAILED_TO_START;
 
 	ret = mmc_blk_part_switch(card, md->part_type);
@@ -2714,6 +2810,9 @@ static void mmc_blk_remove_req(struct mmc_blk_data *md)
 		card = md->queue.card;
 		if (md->disk->flags & GENHD_FL_UP) {
 			device_remove_file(disk_to_dev(md->disk), &md->force_ro);
+			if (mmc_blk_andr36oid_emmc(card) && !md->part_type)
+				device_remove_file(disk_to_dev(md->disk),
+						   &dev_attr_andr36oid_unlock);
 			if ((md->area_type & MMC_BLK_DATA_AREA_BOOT) &&
 					card->ext_csd.boot_ro_lockable)
 				device_remove_file(disk_to_dev(md->disk),
@@ -2761,6 +2860,12 @@ static int mmc_add_disk(struct mmc_blk_data *md)
 	ret = device_create_file(disk_to_dev(md->disk), &md->force_ro);
 	if (ret)
 		goto force_ro_fail;
+	if (mmc_blk_andr36oid_emmc(card) && !md->part_type) {
+		ret = device_create_file(disk_to_dev(md->disk),
+					 &dev_attr_andr36oid_unlock);
+		if (ret)
+			goto power_ro_lock_fail;
+	}
 
 	if ((md->area_type & MMC_BLK_DATA_AREA_BOOT) &&
 	     card->ext_csd.boot_ro_lockable) {
@@ -2995,12 +3100,12 @@ static int mmc_blk_probe(struct mmc_card *card)
 
 #if IS_ENABLED(CONFIG_MMC_DW_ROCKCHIP) || IS_ENABLED(CONFIG_MMC_SDHCI_OF_ARASAN)
 	/*
-	 * andr36oid: not a read-only built-in eMMC. this_card is what Rockchip's
-	 * vendor storage reads and writes with raw requests (rk_sdmmc_ops.c),
-	 * past the read-only checks above.
+	 * andr36oid: not a console's built-in eMMC, in any mode. this_card is
+	 * what Rockchip's vendor storage reads and writes with raw requests
+	 * (rk_sdmmc_ops.c), past the checks above.
 	 */
 	if (card->host->restrict_caps & RESTRICT_CARD_TYPE_EMMC &&
-	    !mmc_blk_andr36oid_ro(card))
+	    !mmc_blk_andr36oid_emmc(card))
 		this_card = card;
 #endif
 
