@@ -488,9 +488,10 @@ MODULE_PARM_DESC(builtin_emmc,
  * Its speed (Kernel Tweaks > eMMC speed): hs is high speed, 52 MHz (the stock
  * DT's, ~40 MB/s on the D-28S), ddr52 the same clock on both edges (~75 MB/s),
  * hs200 up to max-frequency where the chip has it. The device tree allows
- * ddr52 and hs200; the slower ones take those out.
+ * ddr52 and hs200; the slower ones take those out. hs by default: on the
+ * D-28S, ddr52 reads failed now and then, which an eMMC install can't start with.
  */
-static char *emmc_speed = "ddr52";
+static char *emmc_speed = "hs";
 module_param(emmc_speed, charp, 0444);
 MODULE_PARM_DESC(emmc_speed, "Built-in eMMC speed: hs, ddr52 or hs200");
 
@@ -687,11 +688,11 @@ static int __init dw_mci_rockchip_builtin_emmc(void)
 		of_node_put(user);
 		goto out;
 	}
-	if (!strcmp(emmc_speed, "hs")) {
-		emmc_drop_prop(emmc, "mmc-ddr-1_8v");
+	if (!strcmp(emmc_speed, "ddr52")) {
 		emmc_drop_prop(emmc, "mmc-hs200-1_8v");
 	} else if (strcmp(emmc_speed, "hs200")) {
-		emmc_speed = "ddr52";
+		emmc_speed = "hs";
+		emmc_drop_prop(emmc, "mmc-ddr-1_8v");
 		emmc_drop_prop(emmc, "mmc-hs200-1_8v");
 	}
 	if (system)
