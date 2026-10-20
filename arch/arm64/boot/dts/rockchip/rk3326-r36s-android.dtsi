@@ -752,7 +752,8 @@
  * consoles wired like the R36S have their D-pad and rumble on its pins. Boards
  * with those pins free mark it andr36oid,builtin-emmc, and Kernel Tweaks can
  * switch it on for a start (dw_mmc_rockchip.builtin_emmc=1, see
- * dw_mmc-rockchip.c), read-only. Settings as in the Diium D-28S stock DT.
+ * dw_mmc-rockchip.c), read-only. Settings as in the Diium D-28S stock DT,
+ * plus the two below.
  */
 &emmc {
 	bus-width = <8>;
@@ -763,6 +764,11 @@
 	 */
 	supports-emmc;
 	cap-mmc-highspeed;
+	/*
+	 * DDR52: data on both clock edges, about twice the stock DT's high speed
+	 * mode (~40 MB/s on the D-28S). Its pins run at 1.8 V already (vccio6).
+	 */
+	mmc-ddr-1_8v;
 	no-sdio;
 	no-sd;
 	disable-wp;
