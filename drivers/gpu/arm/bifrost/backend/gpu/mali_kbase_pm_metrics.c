@@ -181,6 +181,22 @@ void kbase_pm_get_dvfs_metrics(struct kbase_device *kbdev,
 	spin_unlock_irqrestore(&kbdev->pm.backend.metrics.lock, flags);
 }
 KBASE_EXPORT_TEST_API(kbase_pm_get_dvfs_metrics);
+
+/*
+ * andr36oid: the running busy and idle totals, in 256 ns steps, for load graphs. Unlike
+ * kbase_pm_get_dvfs_metrics() this leaves every window alone, so reading it never changes
+ * what devfreq measures. Both wrap at 32 bits: readers subtract unsigned.
+ */
+void kbase_pm_get_dvfs_totals(struct kbase_device *kbdev, u32 *busy, u32 *idle)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&kbdev->pm.backend.metrics.lock, flags);
+	kbase_pm_get_dvfs_utilisation_calc(kbdev, ktime_get());
+	*busy = kbdev->pm.backend.metrics.values.time_busy;
+	*idle = kbdev->pm.backend.metrics.values.time_idle;
+	spin_unlock_irqrestore(&kbdev->pm.backend.metrics.lock, flags);
+}
 #endif
 
 #ifdef CONFIG_MALI_BIFROST_DVFS

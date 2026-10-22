@@ -3063,6 +3063,26 @@ static ssize_t kbase_show_gpuinfo(struct device *dev,
 }
 static DEVICE_ATTR(gpuinfo, S_IRUGO, kbase_show_gpuinfo, NULL);
 
+#ifdef CONFIG_MALI_BIFROST_DEVFREQ
+/*
+ * andr36oid: "<busy> <idle>", the GPU's running totals in 256 ns steps (32-bit, they
+ * wrap). The power menu and the performance overlay take the busy share between two
+ * reads; devfreq's load file would restart the governor's window on every read instead.
+ */
+static ssize_t show_busy_idle(struct device *dev,
+		struct device_attribute *attr, char *const buf)
+{
+	struct kbase_device *kbdev = to_kbase_device(dev);
+	u32 busy, idle;
+
+	if (!kbdev)
+		return -ENODEV;
+	kbase_pm_get_dvfs_totals(kbdev, &busy, &idle);
+	return scnprintf(buf, PAGE_SIZE, "%u %u\n", busy, idle);
+}
+static DEVICE_ATTR(busy_idle, S_IRUGO, show_busy_idle, NULL);
+#endif
+
 /**
  * set_dvfs_period - Store callback for the dvfs_period sysfs file.
  * @dev:   The device with sysfs file is for
@@ -4592,6 +4612,9 @@ static struct attribute *kbase_attrs[] = {
 	&dev_attr_soft_job_timeout.attr,
 #endif /* !MALI_USE_CSF */
 	&dev_attr_gpuinfo.attr,
+#ifdef CONFIG_MALI_BIFROST_DEVFREQ
+	&dev_attr_busy_idle.attr,
+#endif
 	&dev_attr_dvfs_period.attr,
 	&dev_attr_pm_poweroff.attr,
 	&dev_attr_reset_timeout.attr,

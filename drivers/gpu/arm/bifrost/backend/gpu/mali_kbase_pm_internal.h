@@ -532,6 +532,7 @@ void kbase_pm_do_poweroff(struct kbase_device *kbdev);
 void kbase_pm_get_dvfs_metrics(struct kbase_device *kbdev,
 			       struct kbasep_pm_metrics *last,
 			       struct kbasep_pm_metrics *diff);
+void kbase_pm_get_dvfs_totals(struct kbase_device *kbdev, u32 *busy, u32 *idle);
 #endif /* defined(CONFIG_MALI_BIFROST_DEVFREQ) || defined(CONFIG_MALI_BIFROST_DVFS) */
 
 #ifdef CONFIG_MALI_BIFROST_DVFS
