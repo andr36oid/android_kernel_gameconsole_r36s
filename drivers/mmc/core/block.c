@@ -289,12 +289,14 @@ out_put:
  *   partition table and the bootloader (idbloader, U-Boot, trust) are. A
  *   system on the eMMC never rewrites what starts it.
  *
- * In both, its boot areas are never written and raw MMC commands from user
- * space (ioctl, boot area write protection) are refused, since those could
- * write anywhere. Only the installer, started from an SD card, writes the
- * whole disk: as root it unlocks a read-only eMMC by writing "unlock <CID>"
+ * Raw MMC commands from user space (ioctl, boot area write protection) are
+ * always refused, since those could write anywhere. Only a root helper,
+ * started from an SD card, writes the whole disk and its boot areas: it
+ * unlocks a read-only eMMC by writing "unlock <CID>"
  * (this chip's, as in device/cid) to andr36oid_unlock on the disk, and "lock"
  * when done. A restart locks it again; a system eMMC can't be unlocked.
+ * Boot areas still need force_ro cleared after unlocking; locking sets it
+ * again. Other hardware areas remain protected even while unlocked.
  */
 #define ANDR36OID_LOADER_END	32768
 
@@ -330,7 +332,9 @@ static bool mmc_blk_andr36oid_refused(struct mmc_blk_data *md,
 	default:
 		break;
 	}
-	if (md->part_type || mmc_blk_andr36oid_ro(card))
+	if ((md->part_type && (!andr36oid_unlocked ||
+	     !(md->area_type & MMC_BLK_DATA_AREA_BOOT))) ||
+	    mmc_blk_andr36oid_ro(card))
 		return true;
 	if (andr36oid_unlocked)
 		return false;
@@ -351,6 +355,7 @@ static ssize_t andr36oid_unlock_store(struct device *dev,
 				      const char *buf, size_t count)
 {
 	struct mmc_blk_data *md = mmc_blk_get(dev_to_disk(dev));
+	struct mmc_blk_data *part_md;
 	struct mmc_card *card;
 	char cid[33];
 	ssize_t ret = count;
@@ -379,6 +384,12 @@ static ssize_t andr36oid_unlock_store(struct device *dev,
 	}
 	md->read_only = mmc_blk_readonly(card);
 	set_disk_ro(md->disk, md->read_only);
+	/* Boot areas need a separate force_ro clear after each unlock. */
+	list_for_each_entry(part_md, &md->part, part)
+		if (part_md->area_type & MMC_BLK_DATA_AREA_BOOT) {
+			part_md->read_only = md->read_only;
+			set_disk_ro(part_md->disk, 1);
+		}
 	mmc_blk_put(md);
 	return ret;
 }
