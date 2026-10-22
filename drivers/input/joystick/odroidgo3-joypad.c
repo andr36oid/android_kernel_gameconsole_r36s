@@ -178,6 +178,8 @@ struct joypad {
 	bool no_sticks;
 	/* left and right stick reported as each other (stick_swap) */
 	bool stick_swap;
+	/* physical sticks held at centre (stick_off): bit 0 left, bit 1 right */
+	unsigned int stick_off;
 	
 	/* report interval (ms) */
 	int bt_gpio_count;
@@ -819,6 +821,13 @@ static DEVICE_ATTR(rumble_boost_weak, S_IWUSR | S_IRUGO,
  *   clones with the sticks swapped or players who want them so, their clicks
  *   (L3/R3) too. stick_raw, stick_cal and stick_invert stay with the
  *   physical stick.
+ *
+ * /sys/devices/platform/odroidgo3-joypad/stick_off [rw]
+ *   physical sticks that never move: 0 none, 1 the left one, 2 the right one,
+ *   3 both. For consoles with one stick, whose empty stick input only reports
+ *   ghost moves. Goes by the physical stick like stick_invert, so with
+ *   stick_swap the left stick stays off where it is reported. Its axes stay
+ *   (at centre), so swapping still works.
  */
 /*----------------------------------------------------------------------------*/
 static int stick_raw_limit(struct joypad *joypad)
@@ -1040,6 +1049,31 @@ static DEVICE_ATTR(stick_swap, S_IWUSR | S_IRUGO,
 		   joypad_show_stick_swap,
 		   joypad_store_stick_swap);
 
+static ssize_t joypad_store_stick_off(struct device *dev,
+				      struct device_attribute *attr,
+				      const char *buf, size_t count)
+{
+	struct joypad *joypad = platform_get_drvdata(to_platform_device(dev));
+	unsigned int off;
+
+	if (kstrtouint(buf, 0, &off) || off > 3)
+		return -EINVAL;
+	WRITE_ONCE(joypad->stick_off, off);
+	return count;
+}
+
+static ssize_t joypad_show_stick_off(struct device *dev,
+				     struct device_attribute *attr, char *buf)
+{
+	struct joypad *joypad = platform_get_drvdata(to_platform_device(dev));
+
+	return sprintf(buf, "%u\n", READ_ONCE(joypad->stick_off));
+}
+
+static DEVICE_ATTR(stick_off, S_IWUSR | S_IRUGO,
+		   joypad_show_stick_off,
+		   joypad_store_stick_off);
+
 /*
  * /sys/devices/platform/odroidgo3_joypad/rumble [r]
  *   the motor the DT describes: "pwm", "gpio" or "none"
@@ -1101,6 +1135,7 @@ static struct attribute *joypad_attrs[] = {
 	&dev_attr_stick_deadzone.attr,
 	&dev_attr_stick_invert.attr,
 	&dev_attr_stick_swap.attr,
+	&dev_attr_stick_off.attr,
 	NULL,
 };
 
@@ -1186,6 +1221,14 @@ static int joypad_out_axis(struct joypad *joypad, int type)
 	return type;
 }
 
+/* whether the physical stick an axis belongs to is switched off (stick_off) */
+static bool joypad_stick_off(struct joypad *joypad, int type)
+{
+	int axis = stick_axis(type);
+
+	return axis >= 0 && (READ_ONCE(joypad->stick_off) & (1 << (axis / 2)));
+}
+
 static void joypad_stick_report(struct joypad *joypad,
 				struct input_dev *input,
 				const struct stick_cal *cal)
@@ -1208,6 +1251,8 @@ static void joypad_stick_report(struct joypad *joypad,
 		if (axis < 0)
 			continue;
 		adc->value = CLAMP(out[axis], adc->min, adc->max);
+		if (joypad_stick_off(joypad, adc->report_type))
+			adc->value = 0;
 		input_report_abs(input, joypad_out_axis(joypad, adc->report_type),
 			adc->invert ? adc->value * (-1) : adc->value);
 	}
@@ -1263,6 +1308,8 @@ static void joypad_adc_check(struct input_polled_dev *poll_dev)
 
 		adc->value = adc->value > adc->max ? adc->max : adc->value;
 		adc->value = adc->value < adc->min ? adc->min : adc->value;
+		if (joypad_stick_off(joypad, adc->report_type))
+			adc->value = 0;
 
 		input_report_abs(poll_dev->input,
 			joypad_out_axis(joypad, adc->report_type),
