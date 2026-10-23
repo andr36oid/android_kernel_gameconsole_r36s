@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0+
 /*
+ * WebUSB support backported from Linux 93c473948c588978cd55d9a3adad8b3e8057aa21
+ * by Jó Ágila Bitsch <jgilab@gmail.com>.
+ */
+/*
  * composite.h -- framework for usb gadgets which are composite devices
  *
  * Copyright (C) 2006-2008 David Brownell
@@ -39,6 +43,7 @@
 #include <linux/version.h>
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
+#include <linux/usb/webusb.h>
 #include <linux/log2.h>
 #include <linux/configfs.h>
 
@@ -460,6 +465,10 @@ static inline struct usb_composite_driver *to_cdriver(
  * @qw_sign: qwSignature part of the OS string
  * @b_vendor_code: bMS_VendorCode part of the OS string
  * @use_os_string: false by default, interested gadgets set it
+ * @bcd_webusb_version: WebUSB specification version
+ * @b_webusb_vendor_code: vendor code for WebUSB requests
+ * @landing_page: landing page URL announced through WebUSB
+ * @use_webusb: false by default, interested gadgets set it
  * @os_desc_config: the configuration to be used with OS descriptors
  * @setup_pending: true when setup request is queued but not completed
  * @os_desc_pending: true when os_desc request is queued but not completed
@@ -502,6 +511,12 @@ struct usb_composite_dev {
 	u8				b_vendor_code;
 	struct usb_configuration	*os_desc_config;
 	unsigned int			use_os_string:1;
+
+	/* WebUSB */
+	u16				bcd_webusb_version;
+	u8				b_webusb_vendor_code;
+	char				landing_page[WEBUSB_URL_RAW_MAX_LENGTH + 1];
+	unsigned int			use_webusb:1;
 
 	/* private: */
 	/* internals */

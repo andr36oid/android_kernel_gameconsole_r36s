@@ -1,5 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
+ * WebUSB support backported from Linux 93c473948c588978cd55d9a3adad8b3e8057aa21
+ * by Jó Ágila Bitsch <jgilab@gmail.com>.
+ */
+/*
  * This file holds USB constants and structures that are needed for
  * USB device APIs.  These are used by the USB device model, which is
  * defined in chapter 9 of the USB 2.0 specification and in the
@@ -940,6 +944,22 @@ struct usb_ss_container_id_descriptor {
 } __attribute__((packed));
 
 #define USB_DT_USB_SS_CONTN_ID_SIZE	20
+
+/*
+ * Platform Device Capability descriptor: Defines platform specific device
+ * capabilities
+ */
+#define	USB_PLAT_DEV_CAP_TYPE	5
+struct usb_plat_dev_cap_descriptor {
+	__u8  bLength;
+	__u8  bDescriptorType;
+	__u8  bDevCapabilityType;
+	__u8  bReserved;
+	__u8  UUID[16];
+	__u8  CapabilityData[];
+} __attribute__((packed));
+
+#define USB_DT_USB_PLAT_DEV_CAP_SIZE(capability_data_size)	(20 + capability_data_size)
 
 /*
  * SuperSpeed Plus USB Capability descriptor: Defines the set of
