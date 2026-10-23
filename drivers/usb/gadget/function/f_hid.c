@@ -430,6 +430,16 @@ static void f_hidg_req_complete(struct usb_ep *ep, struct usb_request *req)
 	wake_up(&hidg->write_queue);
 }
 
+/* Keep the wheel in report protocol and send only the three boot mouse bytes. */
+static unsigned int hidg_report_length(struct f_hidg *hidg, unsigned int length)
+{
+	if (hidg->bInterfaceSubClass == USB_INTERFACE_SUBCLASS_BOOT &&
+	    hidg->bInterfaceProtocol == USB_INTERFACE_PROTOCOL_MOUSE &&
+	    hidg->protocol == HID_BOOT_PROTOCOL)
+		return min_t(unsigned int, length, 3);
+	return length;
+}
+
 static ssize_t f_hidg_write(struct file *file, const char __user *buffer,
 			    size_t count, loff_t *offp)
 {
@@ -497,7 +507,7 @@ try_again:
 
 	req->status   = 0;
 	req->zero     = 1;
-	req->length   = count;
+	req->length   = hidg_report_length(hidg, count);
 	req->complete = f_hidg_req_complete;
 	req->context  = hidg;
 
@@ -665,7 +675,8 @@ static int hidg_setup(struct usb_function *f,
 		VDBG(cdev, "get_report\n");
 
 		/* send an empty report */
-		length = min_t(unsigned, length, hidg->report_length);
+		length = hidg_report_length(hidg,
+			min_t(unsigned, length, hidg->report_length));
 		memset(req->buf, 0x0, length);
 
 		goto respond;
