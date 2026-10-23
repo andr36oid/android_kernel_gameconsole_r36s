@@ -2028,6 +2028,12 @@ static void dwc2_hsotg_complete_request(struct dwc2_hsotg *hsotg,
 
 	hs_ep->req = NULL;
 	list_del_init(&hs_req->queue);
+	if (!hs_ep->index && hs_req->req.defer_status &&
+	    hsotg->ep0_state == DWC2_EP0_DATA_OUT && !result) {
+		/* Complete only the data read; userspace must accept the status. */
+		hsotg->ep0_state = DWC2_EP0_STATUS_IN;
+		hs_ep->dir_in = 1;
+	}
 
 	/*
 	 * call the complete request with the locks off, just in case the
@@ -2336,6 +2342,12 @@ static void dwc2_hsotg_handle_outdone(struct dwc2_hsotg *hsotg, int epnum)
 		 * todo - what should we return here? there's no one else
 		 * even bothering to check the status.
 		 */
+	}
+
+	if (epnum == 0 && hsotg->ep0_state == DWC2_EP0_DATA_OUT &&
+	    hs_req->req.defer_status) {
+		dwc2_hsotg_complete_request(hsotg, hs_ep, hs_req, result);
+		return;
 	}
 
 	/* DDMA IN status phase will start from StsPhseRcvd interrupt */

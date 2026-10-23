@@ -97,6 +97,7 @@ struct usb_ep;
  */
 
 struct usb_request {
+	unsigned		defer_status:1;
 	void			*buf;
 	unsigned		length;
 	dma_addr_t		dma;

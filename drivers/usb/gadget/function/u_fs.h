@@ -147,6 +147,8 @@ enum ffs_setup_state {
 };
 
 struct ffs_data {
+	bool defer_out_status;
+	bool out_data_received;
 	struct usb_gadget		*gadget;
 
 	/*

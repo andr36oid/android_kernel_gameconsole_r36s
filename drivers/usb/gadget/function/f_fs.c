@@ -278,6 +278,8 @@ static int __ffs_ep0_queue_wait(struct ffs_data *ffs, char *data, size_t len)
 	}
 
 	req->zero     = len < le16_to_cpu(ffs->ev.setup.wLength);
+	req->defer_status = ffs->defer_out_status && !ffs->out_data_received &&
+		!(ffs->ev.setup.bRequestType & USB_DIR_IN) && len;
 
 	spin_unlock_irq(&ffs->ev.waitq.lock);
 
@@ -304,7 +306,12 @@ static int __ffs_ep0_queue_wait(struct ffs_data *ffs, char *data, size_t len)
 		return -EINTR;
 	}
 
-	ffs->setup_state = FFS_NO_SETUP;
+	if (req->defer_status && !req->status) {
+		ffs->out_data_received = true;
+	} else {
+		ffs->out_data_received = false;
+		ffs->setup_state = FFS_NO_SETUP;
+	}
 	return req->status ? req->status : req->actual;
 }
 
@@ -314,6 +321,7 @@ static int __ffs_ep0_stall(struct ffs_data *ffs)
 		pr_vdebug("ep0 stall\n");
 		usb_ep_set_halt(ffs->gadget->ep0);
 		ffs->setup_state = FFS_NO_SETUP;
+		ffs->out_data_received = false;
 		return -EL2HLT;
 	} else {
 		pr_debug("bogus ep0 stall!\n");
@@ -483,6 +491,7 @@ static ssize_t __ffs_ep0_read_events(struct ffs_data *ffs, char __user *buf,
 		if (events[i].type == FUNCTIONFS_SETUP) {
 			events[i].u.setup = ffs->ev.setup;
 			ffs->setup_state = FFS_SETUP_PENDING;
+			ffs->out_data_received = false;
 		}
 	} while (++i < n);
 
@@ -635,6 +644,13 @@ static long ffs_ep0_ioctl(struct file *file, unsigned code, unsigned long value)
 
 	ENTER();
 
+	if (code == FUNCTIONFS_DEFER_OUT_STATUS) {
+		/* This extension is implemented by the R36S dwc2 gadget driver. */
+		if (value != 1)
+			return -EINVAL;
+		ffs->defer_out_status = true;
+		return 0;
+	}
 	if (code == FUNCTIONFS_INTERFACE_REVMAP) {
 		struct ffs_function *func = ffs->func;
 		ret = func ? ffs_func_revmap_intf(func, value) : -ENODEV;
@@ -2083,6 +2099,38 @@ static int __must_check ffs_do_single_desc(char *data, unsigned len,
 			goto inv_length;
 		break;
 
+	case 0x24: {
+		u8 *ds = (u8 *)_ds;
+
+		/* CDC ACM functional descriptors and their interface references. */
+		if (length < 3)
+			goto inv_length;
+		switch (ds[2]) {
+		case 0:
+			if (length != 5)
+				goto inv_length;
+			break;
+		case 1:
+			if (length != 5)
+				goto inv_length;
+			__entity(INTERFACE, ds[4]);
+			break;
+		case 2:
+			if (length != 4)
+				goto inv_length;
+			break;
+		case 6:
+			if (length != 5)
+				goto inv_length;
+			__entity(INTERFACE, ds[3]);
+			__entity(INTERFACE, ds[4]);
+			break;
+		default:
+			return -EINVAL;
+		}
+		break;
+	}
+
 	case USB_DT_OTG:
 		if (length != sizeof(struct usb_otg_descriptor))
 			goto inv_length;
@@ -2093,6 +2141,7 @@ static int __must_check ffs_do_single_desc(char *data, unsigned len,
 		pr_vdebug("interface association descriptor\n");
 		if (length != sizeof *ds)
 			goto inv_length;
+		__entity(INTERFACE, ds->bFirstInterface);
 		if (ds->iFunction)
 			__entity(STRING, ds->iFunction);
 	}

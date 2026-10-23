@@ -290,4 +290,7 @@ struct usb_functionfs_event {
 
 
 
+/* Opt in to a separate OUT control data read and status ACK on R36S dwc2. */
+#define FUNCTIONFS_DEFER_OUT_STATUS _IO('g', 131)
+
 #endif /* _UAPI__LINUX_FUNCTIONFS_H__ */
