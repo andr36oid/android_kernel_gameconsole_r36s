@@ -1983,6 +1983,26 @@ typedef int (*ffs_os_desc_callback)(enum ffs_os_desc_type entity,
 				    struct usb_os_desc_header *h, void *data,
 				    unsigned len, void *priv);
 
+/* The wired XUSB gamepad descriptor shares HID's type but not its layout. */
+static bool ffs_xinput_desc(const struct usb_descriptor_header *desc)
+{
+	static const u8 gamepad[] = {
+		17, 0x21, 0, 1, 1, 0x25, 0x81, 0x14, 0, 0, 0, 0,
+		0x13, 2, 8, 0, 0
+	};
+
+	const u8 *data = (const u8 *)desc;
+
+	return desc->bLength == sizeof(gamepad) &&
+		!memcmp(data, gamepad, 6) &&
+		!memcmp(data + 7, gamepad + 7, 6) &&
+		!memcmp(data + 14, gamepad + 14, 3) &&
+		(data[6] & USB_DIR_IN) &&
+		(data[6] & USB_ENDPOINT_NUMBER_MASK) &&
+		!(data[13] & USB_DIR_IN) &&
+		(data[13] & USB_ENDPOINT_NUMBER_MASK);
+}
+
 static int __must_check ffs_do_single_desc(char *data, unsigned len,
 					   ffs_entity_callback entity,
 					   void *priv)
@@ -2058,7 +2078,8 @@ static int __must_check ffs_do_single_desc(char *data, unsigned len,
 
 	case HID_DT_HID:
 		pr_vdebug("hid descriptor\n");
-		if (length != sizeof(struct hid_descriptor))
+		if (length != sizeof(struct hid_descriptor) &&
+		    !ffs_xinput_desc(_ds))
 			goto inv_length;
 		break;
 
@@ -2853,7 +2874,22 @@ static int __ffs_func_bind_do_nums(enum ffs_entity_type type, u8 *valuep,
 	switch (type) {
 	default:
 	case FFS_DESCRIPTOR:
-		/* Handled in previous pass by __ffs_func_bind_do_descs() */
+		/* Keep XUSB's embedded endpoint addresses in step with autoconfig. */
+		if (desc && ffs_xinput_desc(desc)) {
+			u8 *data = (u8 *)desc;
+			unsigned int i;
+			static const u8 offsets[] = { 6, 13 };
+
+			for (i = 0; i < ARRAY_SIZE(offsets); i++) {
+				int ep = ffs_ep_addr2idx(func->ffs, data[offsets[i]]) - 1;
+				struct usb_endpoint_descriptor **descs;
+
+				if (ep < 0 || !func->eps[ep].ep)
+					return -EINVAL;
+				descs = func->eps[ep].descs;
+				data[offsets[i]] = descs[descs[0] ? 0 : 1]->bEndpointAddress;
+			}
+		}
 		return 0;
 
 	case FFS_INTERFACE:
