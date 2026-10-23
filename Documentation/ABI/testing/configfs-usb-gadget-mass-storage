@@ -27,5 +27,7 @@ Description:
 				being removable.
 		cdrom		- Flag specifying that LUN shall be reported as
 				being a CD-ROM.
+		forced_eject	- Write any nonempty value to detach a removable
+				LUN even if the host has locked its medium.
 		nofua		- Flag specifying that FUA flag
 				in SCSI WRITE(10,12)
