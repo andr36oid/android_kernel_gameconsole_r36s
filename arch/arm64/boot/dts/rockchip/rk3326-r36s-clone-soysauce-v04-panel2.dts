@@ -15,6 +15,18 @@
 	model = "R36S clone Soy Sauce V04, Panel 2 (experimental)";
 };
 
+/*
+ * No usable electronic headphone detect on this board (the jack reports a
+ * stuck state). Drive the speaker and headphones together by default, like the
+ * stock/dArkOSRE firmware; the mechanical jack switch mutes the speaker when a
+ * plug goes in. "Speaker + headphones always on" in Kernel Tweaks toggles it.
+ */
+&rk817 {
+	codec {
+		rockchip,force-spk-hp;
+	};
+};
+
 &dsi {
 	panel@0 {
 		prepare-delay-ms = <100>;

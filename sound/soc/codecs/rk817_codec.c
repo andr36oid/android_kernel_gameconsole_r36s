@@ -29,6 +29,19 @@
 static int dbg_enable;
 module_param_named(dbg_level, dbg_enable, int, 0644);
 
+/*
+ * Some clones (e.g. Soy Sauce V04) have no usable electronic headphone detect:
+ * the jack reports a stuck state, so the HAL's speaker/headphone switching
+ * strands one output, and the headphone path deliberately turns the speaker
+ * amp off. With force_spk_hp set, every active playback path is driven as
+ * SPK_HP (speaker and headphones together) and the mechanical jack switch mutes
+ * the speaker when a plug goes in, exactly like the stock/dArkOSRE firmware.
+ */
+static bool force_spk_hp;
+module_param(force_spk_hp, bool, 0644);
+MODULE_PARM_DESC(force_spk_hp,
+	"Drive speaker and headphones together (SPK_HP) on every active playback path, for clones with no electronic headphone detect");
+
 #define DBG(args...) \
 	do { \
 		if (dbg_enable) { \
@@ -514,15 +527,20 @@ static int rk817_playback_path_put(struct snd_kcontrol *kcontrol,
 	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
 	struct rk817_codec_priv *rk817 = snd_soc_component_get_drvdata(component);
 	long int pre_path;
+	long int target = ucontrol->value.integer.value[0];
 
-	if (rk817->playback_path == ucontrol->value.integer.value[0]) {
+	/* No usable electronic HP detect on this board: drive both outputs. */
+	if (force_spk_hp && target != OFF)
+		target = SPK_HP;
+
+	if (rk817->playback_path == target) {
 		DBG("%s : playback_path is not changed!\n",
 		    __func__);
 		return 0;
 	}
 
 	pre_path = rk817->playback_path;
-	rk817->playback_path = ucontrol->value.integer.value[0];
+	rk817->playback_path = target;
 
 	DBG("%s : set playback_path %ld, pre_path %ld\n",
 	    __func__, rk817->playback_path, pre_path);
@@ -1265,6 +1283,14 @@ static int rk817_codec_parse_dt_property(struct device *dev,
 			of_property_read_bool(node, "use-ext-amplifier");
 
 	rk817->out_l2spk_r2hp = of_property_read_bool(node, "out-l2spk-r2hp");
+
+	/*
+	 * Boards with no usable electronic headphone detect (mechanical jack
+	 * switch only) default to driving both outputs; the Kernel Tweak can
+	 * still override it at runtime via the module parameter.
+	 */
+	if (of_property_read_bool(node, "rockchip,force-spk-hp"))
+		force_spk_hp = true;
 
 	rk817->adc_for_loopback =
 			of_property_read_bool(node, "adc-for-loopback");
