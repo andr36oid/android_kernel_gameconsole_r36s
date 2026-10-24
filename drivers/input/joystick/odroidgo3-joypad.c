@@ -68,6 +68,9 @@
 /* radial dead zone used once calibrated, percent of full travel */
 #define	STICK_DEADZONE_DEFAULT	8
 #define	STICK_DEADZONE_MAX	50
+/* per-stick sensitivity, percent of travel reported; 100 is unchanged */
+#define	STICK_SENS_DEFAULT	100
+#define	STICK_SENS_MIN		10
 
 /*----------------------------------------------------------------------------*/
 /*
@@ -180,7 +183,9 @@ struct joypad {
 	bool stick_swap;
 	/* physical sticks held at centre (stick_off): bit 0 left, bit 1 right */
 	unsigned int stick_off;
-	
+	/* per-stick sensitivity, percent of travel: [0] left, [1] right */
+	unsigned int stick_sens[2];
+
 	/* report interval (ms) */
 	int bt_gpio_count;
 	struct bt_gpio *gpios;
@@ -828,6 +833,15 @@ static DEVICE_ATTR(rumble_boost_weak, S_IWUSR | S_IRUGO,
  *   ghost moves. Goes by the physical stick like stick_invert, so with
  *   stick_swap the left stick stays off where it is reported. Its axes stay
  *   (at centre), so swapping still works.
+ *
+ * /sys/devices/platform/odroidgo3-joypad/stick_sensitivity [rw]
+ *   per-stick sensitivity "left right", each 10-100 percent of travel
+ *   (100 is unchanged). Scales the reported travel toward centre, so a
+ *   lower number means a full physical push reports less. Set per side
+ *   because clone sticks are often uneven. Goes by the physical stick like
+ *   stick_off, so with stick_swap the left value follows the left stick to
+ *   where it is reported. Applied after the dead zone, only while
+ *   calibrated (stick_cal set).
  */
 /*----------------------------------------------------------------------------*/
 static int stick_raw_limit(struct joypad *joypad)
@@ -1074,6 +1088,39 @@ static DEVICE_ATTR(stick_off, S_IWUSR | S_IRUGO,
 		   joypad_show_stick_off,
 		   joypad_store_stick_off);
 
+static ssize_t joypad_store_stick_sensitivity(struct device *dev,
+					      struct device_attribute *attr,
+					      const char *buf, size_t count)
+{
+	struct joypad *joypad = platform_get_drvdata(to_platform_device(dev));
+	unsigned int v[2];
+	int i;
+
+	if (sscanf(buf, "%u %u", &v[0], &v[1]) != 2)
+		return -EINVAL;
+	for (i = 0; i < 2; i++)
+		if (v[i] < STICK_SENS_MIN || v[i] > 100)
+			return -EINVAL;
+
+	WRITE_ONCE(joypad->stick_sens[0], v[0]);
+	WRITE_ONCE(joypad->stick_sens[1], v[1]);
+	return count;
+}
+
+static ssize_t joypad_show_stick_sensitivity(struct device *dev,
+					     struct device_attribute *attr,
+					     char *buf)
+{
+	struct joypad *joypad = platform_get_drvdata(to_platform_device(dev));
+
+	return sprintf(buf, "%u %u\n", READ_ONCE(joypad->stick_sens[0]),
+		       READ_ONCE(joypad->stick_sens[1]));
+}
+
+static DEVICE_ATTR(stick_sensitivity, S_IWUSR | S_IRUGO,
+		   joypad_show_stick_sensitivity,
+		   joypad_store_stick_sensitivity);
+
 /*
  * /sys/devices/platform/odroidgo3_joypad/rumble [r]
  *   the motor the DT describes: "pwm", "gpio" or "none"
@@ -1136,6 +1183,7 @@ static struct attribute *joypad_attrs[] = {
 	&dev_attr_stick_invert.attr,
 	&dev_attr_stick_swap.attr,
 	&dev_attr_stick_off.attr,
+	&dev_attr_stick_sensitivity.attr,
 	NULL,
 };
 
@@ -1236,6 +1284,8 @@ static void joypad_stick_report(struct joypad *joypad,
 	int *norm = joypad->stick_norm;
 	int out[STICK_AXES];
 	int nbtn, range = 0;
+	unsigned int sens_l = READ_ONCE(joypad->stick_sens[0]);
+	unsigned int sens_r = READ_ONCE(joypad->stick_sens[1]);
 
 	for (nbtn = 0; nbtn < joypad->amux_count; nbtn++)
 		range = max(range, joypad->adcs[nbtn].max);
@@ -1243,6 +1293,16 @@ static void joypad_stick_report(struct joypad *joypad,
 	memcpy(out, norm, sizeof(out));
 	stick_apply_deadzone(&out[0], &out[1], cal->deadzone, range);
 	stick_apply_deadzone(&out[2], &out[3], cal->deadzone, range);
+
+	/* scale each stick's travel toward centre to reduce its sensitivity */
+	if (sens_l != 100) {
+		out[0] = out[0] * (int)sens_l / 100;
+		out[1] = out[1] * (int)sens_l / 100;
+	}
+	if (sens_r != 100) {
+		out[2] = out[2] * (int)sens_r / 100;
+		out[3] = out[3] * (int)sens_r / 100;
+	}
 
 	for (nbtn = 0; nbtn < joypad->amux_count; nbtn++) {
 		struct bt_adc *adc = &joypad->adcs[nbtn];
@@ -1305,6 +1365,14 @@ static void joypad_adc_check(struct input_polled_dev *poll_dev)
 			adc->value = ADC_DATA_TUNING(adc->value, adc->tuning_n);
 		if (adc->tuning_p && adc->value > 0)
 			adc->value = ADC_DATA_TUNING(adc->value, adc->tuning_p);
+
+		/* per-stick sensitivity, as in joypad_stick_report (uncalibrated) */
+		if (axis >= 0) {
+			unsigned int s = READ_ONCE(joypad->stick_sens[axis / 2]);
+
+			if (s != 100)
+				adc->value = adc->value * (int)s / 100;
+		}
 
 		adc->value = adc->value > adc->max ? adc->max : adc->value;
 		adc->value = adc->value < adc->min ? adc->min : adc->value;
@@ -2178,6 +2246,8 @@ static int joypad_probe(struct platform_device *pdev)
 
 	mutex_init(&joypad->lock);
 	joypad->cal.deadzone = STICK_DEADZONE_DEFAULT;
+	joypad->stick_sens[0] = STICK_SENS_DEFAULT;
+	joypad->stick_sens[1] = STICK_SENS_DEFAULT;
 	platform_set_drvdata(pdev, joypad);
 
 	/* devm, so a deferred probe can add the group again on the retry */
