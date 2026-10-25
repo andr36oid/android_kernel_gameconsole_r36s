@@ -1,0 +1,11 @@
+config SV6160
+	tristate "Seekwave SV6160 / Rockchip RK915 SDIO WiFi"
+	depends on MAC80211 && MMC
+	depends on ARM64 || COMPILE_TEST
+	select FW_LOADER
+	help
+	  Experimental mac80211 driver for Seekwave SV6160 (Rockchip RK915).
+	  Firmware loading and SDIO transport are implemented upstream;
+	  scanning, association and data traffic still need hardware validation.
+	  This driver does not implement Bluetooth.
+	  The module is called sv6160.

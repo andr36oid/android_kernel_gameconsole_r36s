@@ -134,4 +134,6 @@ source "drivers/net/wireless/rtl8188gu/Kconfig"
 source "drivers/net/wireless/rtl8852bu/Kconfig"
 source "drivers/net/wireless/aic8800/Kconfig"
 
+source "drivers/net/wireless/seekwave/Kconfig"
+
 endif # WLAN

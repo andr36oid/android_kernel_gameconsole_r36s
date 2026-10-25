@@ -293,12 +293,11 @@ static u32 dw_mci_prepare_command(struct mmc_host *mmc, struct mmc_command *cmd)
 	    (cmd->opcode == SD_IO_RW_DIRECT &&
 	     ((cmd->arg >> 9) & 0x1FFFF) == SDIO_CCCR_ABORT))
 		cmdr |= SDMMC_CMD_STOP;
-	else if (cmd->opcode != MMC_SEND_STATUS && cmd->data)
+	else if ((mmc->caps2 & MMC_CAP2_WIFI_RK915) &&
+		 cmd->opcode == SD_IO_RW_DIRECT)
+		/* Do not let CMD52 overtake CMD53, except CCCR_ABORT above. */
 		cmdr |= SDMMC_CMD_PRV_DAT_WAIT;
-
-	/* RK915: CMD52 must not overtake a CMD53 transfer still in flight */
-	if ((mmc->caps2 & MMC_CAP2_WIFI_RK915) &&
-	    cmd->opcode == SD_IO_RW_DIRECT)
+	else if (cmd->opcode != MMC_SEND_STATUS && cmd->data)
 		cmdr |= SDMMC_CMD_PRV_DAT_WAIT;
 
 	if (cmd->opcode == SD_SWITCH_VOLTAGE) {

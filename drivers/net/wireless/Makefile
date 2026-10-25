@@ -43,3 +43,5 @@ obj-$(CONFIG_RTL8192FU)           += rtl8192fu/
 obj-$(CONFIG_RTL8188GU)           += rtl8188gu/
 obj-$(CONFIG_RTL8852BU)           += rtl8852bu/
 obj-$(CONFIG_AIC_WLAN_SUPPORT)    += aic8800/
+
+obj-$(CONFIG_SV6160) += seekwave/

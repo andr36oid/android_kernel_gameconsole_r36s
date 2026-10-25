@@ -340,7 +340,8 @@ int mmc_of_parse(struct mmc_host *host)
 		host->restrict_caps |= RESTRICT_CARD_TYPE_SDIO;
 	if (device_property_read_bool(dev, "supports-emmc"))
 		host->restrict_caps |= RESTRICT_CARD_TYPE_EMMC;
-	if (device_property_read_bool(dev, "supports-rk915"))
+	if (device_property_read_bool(dev, "supports-rk915") ||
+	    device_property_read_bool(dev, "supports-rk912"))
 		host->caps2 |= MMC_CAP2_WIFI_RK915;
 
 #ifdef CONFIG_SDIO_KEEPALIVE

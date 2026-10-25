@@ -175,6 +175,9 @@ static int cistpl_funce_func(struct mmc_card *card, struct sdio_func *func,
 	/* Only valid for the individual function's CIS (1-7) */
 	if (!func)
 		return -EINVAL;
+	/* Even the shortened RK915 tuple must contain the block-size field. */
+	if (size < 14)
+		return -EINVAL;
 
 	/*
 	 * This tuple has a different length depending on the SDIO spec
