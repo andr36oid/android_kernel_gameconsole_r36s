@@ -494,3 +494,85 @@
 	vccio5-supply = <&vcc_3v3>;
 	/delete-property/ vccio6-supply;
 };
+
+/* Phase 2: stock radio wiring. This does not establish working Wi-Fi or BT. */
+/ {
+	grc802_sdio_pwrseq: sdio-pwrseq {
+		compatible = "mmc-pwrseq-simple";
+		/* Stock WIFI,poweren_gpio is active high on GPIO0_A2. */
+		reset-gpios = <&gpio0 RK_PA2 GPIO_ACTIVE_LOW>;
+		post-power-on-delay-ms = <200>;
+	};
+
+	wireless-bluetooth {
+		compatible = "bluetooth-platdata";
+		clock-names = "ext_clock";
+		uart_rts_gpios = <&gpio1 RK_PC3 GPIO_ACTIVE_LOW>;
+		pinctrl-names = "default", "rts_gpio";
+		pinctrl-0 = <&uart1_rts>;
+		pinctrl-1 = <&uart1_rts_gpio>;
+		BT,reset_gpio = <&gpio0 RK_PA0 GPIO_ACTIVE_HIGH>;
+		BT,wake_gpio = <&gpio0 RK_PA1 GPIO_ACTIVE_HIGH>;
+		BT,wake_host_irq = <&gpio0 RK_PA7 GPIO_ACTIVE_HIGH>;
+		/* Disabled in stock. No compatible Seekwave BT transport is ported. */
+		status = "disabled";
+	};
+
+	/* Stock's alternate boot binding is disabled and uses A5 for host wake. */
+	seekwcn_boot {
+		compatible = "seekwave,sv6160";
+		dma_type = <1>;
+		gpio_host_wake = <&gpio0 RK_PA5 GPIO_ACTIVE_LOW>;
+		gpio_chip_wake = <&gpio0 RK_PA1 GPIO_ACTIVE_HIGH>;
+		gpio_chip_en = <&gpio0 RK_PA2 GPIO_ACTIVE_HIGH>;
+		status = "disabled";
+	};
+};
+
+&{/wireless-wlan} {
+	wifi_chip_type = "rk915";
+	WIFI,poweren_gpio = <&gpio0 RK_PA2 GPIO_ACTIVE_HIGH>;
+	WIFI,host_wake_irq = <&gpio0 RK_PA1 GPIO_ACTIVE_HIGH>;
+	/* mmc-pwrseq owns power; do not let rfkill-rk request the same GPIO. */
+	status = "disabled";
+};
+
+&sdio {
+	/delete-property/ andr36oid,second-card-slot;
+	/delete-property/ cd-gpios;
+	/delete-property/ supports-sd;
+	/delete-property/ cap-mmc-highspeed;
+	/delete-property/ card-detect-delay;
+	/delete-property/ vmmc-supply;
+	/delete-property/ vqmmc-supply;
+	#address-cells = <1>;
+	#size-cells = <0>;
+	bus-width = <4>;
+	max-frequency = <50000000>;
+	cap-sd-highspeed;
+	cap-sdio-irq;
+	supports-sdio;
+	supports-rk912;
+	keep-power-in-suspend;
+	non-removable;
+	mmc-pwrseq = <&grc802_sdio_pwrseq>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&sdio_bus4 &sdio_cmd &sdio_clk>;
+	status = "okay";
+
+	wifi@1 {
+		compatible = "seekwave,sv6160";
+		reg = <1>;
+		interrupt-parent = <&gpio0>;
+		/* Use the enabled stock WLAN binding, not the XF40H overlay's A5. */
+		interrupts = <RK_PA1 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "host-wake";
+	};
+};
+
+/* Stock enables UART1 with CTS, leaving RTS to bluetooth-platdata. */
+&uart1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart1_xfer &uart1_cts>;
+	status = "okay";
+};

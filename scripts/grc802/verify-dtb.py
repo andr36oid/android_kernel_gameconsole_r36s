@@ -45,3 +45,17 @@ for name, channels in [('left-stick', [0, 1]), ('right-stick', [2, 3])]:
     assert cells(built, '/' + name, 'io-channels')[1::2] == channels
 assert get(built, '/firmware/android', 'lcd_density', 's') == '304'
 print('Stock timings, panel properties, reset, 18 keys, 3 rockers, 4 ADC axes and density verified')
+# Radio checks run only on the Phase 2 tree. Phase 1 intentionally disables SDIO.
+if get(built, '/dwmmc@ff380000', 'status', 's') == 'okay':
+    sdio = '/dwmmc@ff380000'
+    assert cells(built, sdio, 'bus-width') == cells(stock, sdio, 'bus-width')
+    assert cells(built, sdio, 'max-frequency') == cells(stock, sdio, 'max-frequency')
+    assert gpio(stock, cells(stock, '/wireless-wlan', 'WIFI,poweren_gpio')) == [(0, 2, 0)]
+    assert gpio(built, cells(built, '/sdio-pwrseq', 'reset-gpios')) == [(0, 2, 1)]
+    irq = cells(built, sdio + '/wifi@1', 'interrupts')
+    assert irq == [gpio(stock, cells(stock, '/wireless-wlan', 'WIFI,host_wake_irq'))[0][1], 4]
+    for prop in ['BT,reset_gpio', 'BT,wake_gpio', 'BT,wake_host_irq', 'uart_rts_gpios']:
+        assert gpio(stock, cells(stock, '/wireless-bluetooth', prop)) == gpio(built, cells(built, '/wireless-bluetooth', prop)), prop
+    assert get(built, '/wireless-bluetooth', 'status', 's') == 'disabled'
+    assert get(built, '/serial@ff158000', 'status', 's') == get(stock, '/serial@ff158000', 'status', 's')
+    print('Stock SDIO controller, power/wake pins, BT pins and UART1 status verified')

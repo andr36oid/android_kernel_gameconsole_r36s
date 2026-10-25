@@ -1,0 +1,11 @@
+--- a/device.mk
++++ b/device.mk
+@@ -1017,3 +1017,8 @@
+ PRODUCT_PROPERTY_OVERRIDES += \
+     ro.logd.kernel=false
+ endif
++
++# Opt in only for the experimental GRC802 SDIO driver.
++ifeq ($(GRC802_EXPERIMENTAL_RADIO),true)
++include kernel/gameconsole/r36s/scripts/grc802/android-product.mk
++endif
