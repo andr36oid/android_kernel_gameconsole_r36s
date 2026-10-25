@@ -1,0 +1,496 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/* GRC802-MB V1.1, R36 Ultra X. Pins and panel data from stock EmuELEC. */
+/dts-v1/;
+#include "rk3326-r36s-android.dtsi"
+
+/delete-node/ &joypad;
+/delete-node/ &gpio_keys;
+/delete-node/ &leds;
+/delete-node/ &{/rk817-sound};
+
+/ {
+	model = "R36 Ultra X GRC802-MB V1.1";
+	compatible = "grc802,r36-ultra-x", "rockchip,rk3326";
+
+	firmware {
+		android {
+			compatible = "android,firmware";
+			lcd_density = "304";
+		};
+	};
+
+	left-stick {
+		compatible = "adc-joystick";
+		label = "GRC802 left stick";
+		io-channels = <&saradc 0>, <&saradc 1>;
+		io-channel-names = "joy_x", "joy_y";
+		poll-interval = <30>;
+	};
+
+	right-stick {
+		compatible = "adc-joystick";
+		label = "GRC802 right stick";
+		io-channels = <&saradc 2>, <&saradc 3>;
+		io-channel-names = "joy_x", "joy_y";
+		linux,abs-codes = <ABS_RX ABS_RY>;
+		poll-interval = <30>;
+	};
+
+	gamepad-keys {
+		compatible = "gpio-keys";
+		label = "GO-Super Gamepad";
+		pinctrl-names = "default";
+		pinctrl-0 = <&grc802_button_pins>;
+		r1 {
+			label = "r1";
+			linux,code = <311>;
+			gpios = <&gpio3 RK_PB3 GPIO_ACTIVE_LOW>;
+			debounce-interval = <10>;
+		};
+		r2 {
+			label = "r2";
+			linux,code = <313>;
+			gpios = <&gpio3 RK_PA0 GPIO_ACTIVE_LOW>;
+			debounce-interval = <10>;
+		};
+		l1 {
+			label = "l1";
+			linux,code = <310>;
+			gpios = <&gpio3 RK_PB5 GPIO_ACTIVE_LOW>;
+			debounce-interval = <10>;
+		};
+		l2 {
+			label = "l2";
+			linux,code = <312>;
+			gpios = <&gpio3 RK_PA6 GPIO_ACTIVE_LOW>;
+			debounce-interval = <10>;
+		};
+		a {
+			label = "a";
+			linux,code = <304>;
+			gpios = <&gpio3 RK_PC0 GPIO_ACTIVE_LOW>;
+			debounce-interval = <10>;
+		};
+		b {
+			label = "b";
+			linux,code = <305>;
+			gpios = <&gpio3 RK_PC1 GPIO_ACTIVE_LOW>;
+			debounce-interval = <10>;
+		};
+		x {
+			label = "x";
+			linux,code = <307>;
+			gpios = <&gpio3 RK_PC2 GPIO_ACTIVE_LOW>;
+			debounce-interval = <10>;
+		};
+		y {
+			label = "y";
+			linux,code = <308>;
+			gpios = <&gpio3 RK_PC3 GPIO_ACTIVE_LOW>;
+			debounce-interval = <10>;
+		};
+		left {
+			label = "left";
+			linux,code = <105>;
+			gpios = <&gpio3 RK_PC4 GPIO_ACTIVE_LOW>;
+			debounce-interval = <10>;
+		};
+		right {
+			label = "right";
+			linux,code = <106>;
+			gpios = <&gpio3 RK_PC5 GPIO_ACTIVE_LOW>;
+			debounce-interval = <10>;
+		};
+		up {
+			label = "up";
+			linux,code = <103>;
+			gpios = <&gpio3 RK_PC6 GPIO_ACTIVE_LOW>;
+			debounce-interval = <10>;
+		};
+		down {
+			label = "down";
+			linux,code = <108>;
+			gpios = <&gpio3 RK_PC7 GPIO_ACTIVE_LOW>;
+			debounce-interval = <10>;
+		};
+		select {
+			label = "select";
+			linux,code = <314>;
+			gpios = <&gpio3 RK_PD0 GPIO_ACTIVE_LOW>;
+			debounce-interval = <10>;
+		};
+		start {
+			label = "start";
+			linux,code = <315>;
+			gpios = <&gpio3 RK_PD1 GPIO_ACTIVE_LOW>;
+			debounce-interval = <10>;
+		};
+		fn {
+			label = "fn";
+			linux,code = <172>;
+			gpios = <&gpio3 RK_PD2 GPIO_ACTIVE_LOW>;
+			debounce-interval = <10>;
+		};
+		mode {
+			label = "mode";
+			linux,code = <316>;
+			gpios = <&gpio2 RK_PB2 GPIO_ACTIVE_LOW>;
+			debounce-interval = <10>;
+		};
+		l3 {
+			label = "l3";
+			linux,code = <158>;
+			gpios = <&gpio2 RK_PB5 GPIO_ACTIVE_LOW>;
+			debounce-interval = <10>;
+		};
+		r3 {
+			label = "r3";
+			linux,code = <125>;
+			gpios = <&gpio2 RK_PB6 GPIO_ACTIVE_LOW>;
+			debounce-interval = <10>;
+		};
+		rocker0 {
+			label = "rocker0";
+			linux,code = <158>;
+			gpios = <&gpio2 RK_PB3 GPIO_ACTIVE_LOW>;
+			debounce-interval = <10>;
+		};
+		rocker {
+			label = "rocker";
+			linux,code = <172>;
+			gpios = <&gpio2 RK_PB7 GPIO_ACTIVE_LOW>;
+			debounce-interval = <10>;
+		};
+		rocker1 {
+			label = "rocker1";
+			linux,code = <125>;
+			gpios = <&gpio2 RK_PC0 GPIO_ACTIVE_LOW>;
+			debounce-interval = <10>;
+		};
+	};
+
+	/* Stock volume ladder shares ADC2 with right X. Preserve the stock layout. */
+	adc-keys {
+		compatible = "adc-keys";
+		io-channels = <&saradc 2>;
+		io-channel-names = "buttons";
+		poll-interval = <100>;
+		keyup-threshold-microvolt = <1800000>;
+		vol-down { label = "volume down"; linux,code = <KEY_VOLUMEDOWN>; press-threshold-microvolt = <295000>; };
+		vol-up { label = "volume up"; linux,code = <KEY_VOLUMEUP>; press-threshold-microvolt = <15000>; };
+		mute { label = "mute"; linux,code = <KEY_MUTE>; press-threshold-microvolt = <800000>; };
+	};
+
+	vcc18_lcd_n: vcc18-lcd-n {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc18_lcd_n";
+		regulator-boot-on;
+		gpio = <&gpio2 RK_PA4 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-state-mem { regulator-off-in-suspend; };
+	};
+
+	vbus_host: vbus-host-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "vbus_host";
+		regulator-boot-on;
+		regulator-always-on;
+		gpio = <&gpio3 RK_PA4 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+	};
+
+	rk817-sound {
+		compatible = "rockchip,multicodecs-card";
+		rockchip,card-name = "rockchip-rk817";
+		hp-det-gpio = <&gpio2 RK_PC6 GPIO_ACTIVE_HIGH>;
+		io-channels = <&saradc 1>;
+		io-channel-names = "adc-detect";
+		keyup-threshold-microvolt = <1800000>;
+		poll-interval = <100>;
+		rockchip,format = "i2s";
+		rockchip,mclk-fs = <256>;
+		rockchip,cpu = <&i2s1_2ch>;
+		rockchip,codec = <&rk817_codec>;
+		rockchip,codec-hp-det;
+		pinctrl-names = "default";
+		pinctrl-0 = <&grc802_hp_det>;
+		play-pause-key { label = "playpause"; linux,code = <KEY_PLAYPAUSE>; press-threshold-microvolt = <2000>; };
+	};
+};
+
+&pinctrl {
+	grc802 {
+		grc802_button_pins: button-pins {
+			rockchip,pins =
+				<3 RK_PB3 RK_FUNC_GPIO &pcfg_pull_up>,
+				<3 RK_PA0 RK_FUNC_GPIO &pcfg_pull_up>,
+				<3 RK_PB5 RK_FUNC_GPIO &pcfg_pull_up>,
+				<3 RK_PA6 RK_FUNC_GPIO &pcfg_pull_up>,
+				<3 RK_PC0 RK_FUNC_GPIO &pcfg_pull_up>,
+				<3 RK_PC1 RK_FUNC_GPIO &pcfg_pull_up>,
+				<3 RK_PC2 RK_FUNC_GPIO &pcfg_pull_up>,
+				<3 RK_PC3 RK_FUNC_GPIO &pcfg_pull_up>,
+				<3 RK_PC4 RK_FUNC_GPIO &pcfg_pull_up>,
+				<3 RK_PC5 RK_FUNC_GPIO &pcfg_pull_up>,
+				<3 RK_PC6 RK_FUNC_GPIO &pcfg_pull_up>,
+				<3 RK_PC7 RK_FUNC_GPIO &pcfg_pull_up>,
+				<3 RK_PD0 RK_FUNC_GPIO &pcfg_pull_up>,
+				<3 RK_PD1 RK_FUNC_GPIO &pcfg_pull_up>,
+				<3 RK_PD2 RK_FUNC_GPIO &pcfg_pull_up>,
+				<2 RK_PB2 RK_FUNC_GPIO &pcfg_pull_up>,
+				<2 RK_PB5 RK_FUNC_GPIO &pcfg_pull_up>,
+				<2 RK_PB6 RK_FUNC_GPIO &pcfg_pull_up>,
+				<2 RK_PB3 RK_FUNC_GPIO &pcfg_pull_up>,
+				<2 RK_PB7 RK_FUNC_GPIO &pcfg_pull_up>,
+				<2 RK_PC0 RK_FUNC_GPIO &pcfg_pull_up>;
+		};
+		grc802_hp_det: hp-det { rockchip,pins = <2 RK_PC6 RK_FUNC_GPIO &pcfg_pull_up>; };
+	};
+};
+
+&backlight { pwms = <&pwm1 0 25000 0>; default-brightness-level = <200>; };
+&status_led { status = "disabled"; };
+&pwm0 { status = "disabled"; };
+
+&dsi {
+	panel@0 {
+		compatible = "sitronix,st7703", "simple-panel-dsi";
+		power-supply = <&vcc18_lcd_n>;
+		reset-gpios = <&gpio3 RK_PD3 GPIO_ACTIVE_LOW>;
+		prepare-delay-ms = <20>;
+		reset-delay-ms = <20>;
+		init-delay-ms = <20>;
+		enable-delay-ms = <120>;
+		disable-delay-ms = <20>;
+		unprepare-delay-ms = <20>;
+		width-mm = <153>;
+		height-mm = <85>;
+		dsi,flags = <0xa03>;
+		dsi,format = <0>;
+		dsi,lanes = <4>;
+		panel-init-sequence = [
+			15 00 02 ee 01 15 00 02 ea 07 15 00 02 eb 12 15 00 02 0a 5e
+			15 00 02 13 14 15 00 02 17 35 15 00 02 1d 33 15 00 02 21 01
+			15 00 02 28 28 15 00 02 29 18 15 00 02 2a 63 15 00 02 2f f3
+			15 00 02 ee 02 15 00 02 39 a9 15 00 02 00 00 15 00 02 01 0d
+			15 00 02 02 12 15 00 02 03 08 15 00 02 04 0e 15 00 02 05 30
+			15 00 02 06 0b 15 00 02 07 0e 15 00 02 08 0f 15 00 02 09 0e
+			15 00 02 0a 11 15 00 02 0b 4e 15 00 02 0c 14 15 00 02 0d 1a
+			15 00 02 0e 2f 15 00 02 0f 36 15 00 02 10 3f 15 00 02 20 00
+			15 00 02 21 0d 15 00 02 22 12 15 00 02 23 08 15 00 02 24 0e
+			15 00 02 25 30 15 00 02 26 0b 15 00 02 27 0e 15 00 02 28 0f
+			15 00 02 29 0e 15 00 02 2a 11 15 00 02 2b 4e 15 00 02 2c 14
+			15 00 02 2d 1a 15 00 02 2e 2f 15 00 02 2f 36 15 00 02 30 3f
+			15 00 02 ee 04 15 00 02 00 05 15 00 02 01 01 15 00 02 02 80
+			15 00 02 03 04 15 00 02 04 00 15 00 02 06 06 15 00 02 07 05
+			15 00 02 08 1a 15 00 02 09 20 15 00 02 0a 0e 15 00 02 0b 00
+			15 00 02 20 40 15 00 02 24 08 15 00 02 ee 05 15 00 02 00 01
+			15 00 02 01 09 15 00 02 02 05 15 00 02 03 05 15 00 02 07 05
+			15 00 02 08 0d 15 00 02 09 00 15 00 02 0a 12 15 00 02 0b 14
+			15 00 02 0c 66 15 00 02 10 03 15 00 02 11 07 15 00 02 12 05
+			15 00 02 13 05 15 00 02 19 12 15 00 02 1a f6 15 00 02 40 55
+			15 00 02 41 00 15 00 02 43 03 15 00 02 44 01 15 00 02 45 81
+			15 00 02 46 06 15 00 02 47 00 15 00 02 ee 06 15 00 02 00 45
+			15 00 02 02 01 15 00 02 04 88 15 00 02 06 cd 15 00 02 08 ef
+			15 00 02 09 cd 15 00 02 0a ab 15 00 02 0b 89 15 00 02 0c 67
+			15 00 02 0d 45 15 00 02 0e 23 15 00 02 0f 01 15 00 02 ee 07
+			15 00 02 00 3c 15 00 02 01 3c 15 00 02 02 3c 15 00 02 03 3c
+			15 00 02 04 0d 15 00 02 05 3c 15 00 02 06 3c 15 00 02 07 3c
+			15 00 02 08 08 15 00 02 09 10 15 00 02 0a 12 15 00 02 0b 14
+			15 00 02 0c 16 15 00 02 0d 18 15 00 02 0e 1a 15 00 02 0f 1c
+			15 00 02 10 1e 15 00 02 11 04 15 00 02 12 00 15 00 02 13 3c
+			15 00 02 14 0c 15 00 02 15 3c 15 00 02 20 3c 15 00 02 21 3c
+			15 00 02 22 3c 15 00 02 23 3c 15 00 02 24 0d 15 00 02 25 3c
+			15 00 02 26 3c 15 00 02 27 3c 15 00 02 28 08 15 00 02 29 11
+			15 00 02 2a 13 15 00 02 2b 15 15 00 02 2c 17 15 00 02 2d 19
+			15 00 02 2e 1b 15 00 02 2f 1d 15 00 02 30 1f 15 00 02 31 05
+			15 00 02 32 01 15 00 02 33 3c 15 00 02 34 0c 15 00 02 35 3c
+			15 00 02 ee 08 15 00 02 10 00 15 00 02 12 dc 15 00 02 13 1c
+			15 00 02 17 23 15 00 02 18 20 15 00 02 20 80 15 00 02 ee 0f
+			15 00 02 00 01 15 00 02 01 00 15 00 02 ee 00 15 00 02 ea 00
+			15 00 02 eb 00 15 00 02 36 00 05 c8 01 11 05 14 01 29
+		];
+		panel-exit-sequence = [05 00 01 28 05 00 01 10];
+	};
+};
+
+&timing0 {
+	clock-frequency = <62000000>;
+	hactive = <1024>;
+	vactive = <768>;
+	hfront-porch = <90>;
+	hsync-len = <80>;
+	hback-porch = <80>;
+	vfront-porch = <16>;
+	vsync-len = <8>;
+	vback-porch = <8>;
+	hsync-active = <0>;
+	vsync-active = <0>;
+	de-active = <0>;
+	pixelclk-active = <0>;
+};
+
+/* The base already routes DSI through VOPB, as on R46H. */
+&dmc_opp_table { opp-786000000 { status = "disabled"; }; };
+&uart2 { status = "disabled"; };
+&{/fiq-debugger} { rockchip,serial-id = <5>; pinctrl-0 = <&uart5_xfer>; };
+&sdio { status = "disabled"; };
+&{/wireless-wlan} { status = "disabled"; };
+&u2phy_host { phy-supply = <&vbus_host>; };
+
+&rk817 {
+	battery {
+				compatible = "rk817,battery";
+				ocv_table = <0xdac 0xdc5 0xdea 0xe07 0xe20 0xe33 0xe45 0xe58 0xe6f 0xe8d 0xeb1 0xedd 0xf0a 0xf35 0xf60 0xf89 0xfb1 0xfd4 0xff6 0x101d 0x1053>;
+				design_capacity = <0xe03>;
+				design_qmax = <0x1013>;
+				bat_res = <0x6d>;
+				design_max_voltage = <0x1018>;
+				sleep_enter_current = <0x12c>;
+				sleep_exit_current = <0x12c>;
+				sleep_filter_current = <0x64>;
+				power_off_thresd = <0xdac>;
+				zero_algorithm_vol = <0xf0a>;
+				max_soc_offset = <0x3c>;
+				monitor_sec = <0x5>;
+				sample_res = <0xa>;
+				virtual_power = <0x0>;
+				dc_det_gpio = <&gpio3 RK_PA5 GPIO_ACTIVE_HIGH>;
+			};
+	charger {
+		/delete-property/ bat_low_gpio;
+				compatible = "rk817,charger";
+				min_input_voltage = <0x1194>;
+				max_input_current = <0x640>;
+				max_chrg_current = <0x640>;
+				max_chrg_voltage = <0x10fe>;
+				chrg_term_mode = <0x0>;
+				chrg_finish_cur = <0x12c>;
+				virtual_power = <0x0>;
+				dc_det_gpio = <&gpio3 RK_PA5 GPIO_ACTIVE_HIGH>;
+				dc_det_adc = <0x0>;
+				extcon = <&u2phy>;
+			};
+};
+&rk817_codec {
+	spk-ctl-gpios = <&gpio3 RK_PA7 GPIO_ACTIVE_HIGH>;
+	spk-mute-delay-ms = <500>;
+	use-ext-amplifier;
+	hp-volume = <15>;
+	spk-volume = <15>;
+};
+&pmic_int { rockchip,pins = <0 RK_PB2 RK_FUNC_GPIO &pcfg_pull_up>; };
+&vccsys { regulator-name = "vcc5v0_sys"; regulator-boot-on; regulator-min-microvolt = <5000000>; regulator-max-microvolt = <5000000>; };
+
+&vcc_3v3 {
+					regulator-always-on;
+					regulator-boot-on;
+					regulator-min-microvolt = <0xf4240>;
+					regulator-max-microvolt = <0xf4240>;
+					regulator-name = "vcc_1v0";
+
+					regulator-state-mem {
+						regulator-on-in-suspend;
+						regulator-suspend-microvolt = <0xf4240>;
+					};
+				};
+
+&vcc_1v0 {
+					regulator-always-on;
+					regulator-boot-on;
+					regulator-min-microvolt = <0xf4240>;
+					regulator-max-microvolt = <0xf4240>;
+					regulator-name = "vcc1v0_soc";
+
+					regulator-state-mem {
+						regulator-on-in-suspend;
+						regulator-suspend-microvolt = <0xf4240>;
+					};
+				};
+
+&vcc3v3_pmu {
+					regulator-always-on;
+					regulator-boot-on;
+					regulator-min-microvolt = <0x2dc6c0>;
+					regulator-max-microvolt = <0x2dc6c0>;
+					regulator-name = "vcc3v0_pmu";
+
+					regulator-state-mem {
+						regulator-on-in-suspend;
+						regulator-suspend-microvolt = <0x2dc6c0>;
+					};
+				};
+
+&vccio_sd {
+					regulator-always-on;
+					regulator-boot-on;
+					regulator-min-microvolt = <0x1b7740>;
+					regulator-max-microvolt = <0x325aa0>;
+					regulator-name = "vccio_sd";
+
+					regulator-state-mem {
+						regulator-on-in-suspend;
+						regulator-suspend-microvolt = <0x325aa0>;
+					};
+				};
+
+&vcc_sd {
+					regulator-min-microvolt = <0x325aa0>;
+					regulator-max-microvolt = <0x325aa0>;
+					regulator-name = "vcc_sd";
+
+					regulator-state-mem {
+						regulator-on-in-suspend;
+						regulator-suspend-microvolt = <0x325aa0>;
+					};
+				};
+
+&vcc_backlight {
+					regulator-always-on;
+					regulator-boot-on;
+					regulator-min-microvolt = <0x1b7740>;
+					regulator-max-microvolt = <0x325aa0>;
+					regulator-name = "vcc2v8_dvp";
+
+					regulator-state-mem {
+						regulator-on-in-suspend;
+						regulator-suspend-microvolt = <0x325aa0>;
+					};
+				};
+
+&vcc_lcd {
+					regulator-always-on;
+					regulator-boot-on;
+					regulator-min-microvolt = <0x325aa0>;
+					regulator-max-microvolt = <0x325aa0>;
+					regulator-name = "vcc1v8_dvp";
+
+					regulator-state-mem {
+						regulator-on-in-suspend;
+						regulator-suspend-microvolt = <0x325aa0>;
+					};
+				};
+
+&vcc_wifi {
+					regulator-always-on;
+					regulator-boot-on;
+					regulator-min-microvolt = <0x16e360>;
+					regulator-max-microvolt = <0x16e360>;
+					regulator-name = "vdd1v5_dvp";
+
+					regulator-state-mem {
+						regulator-off-in-suspend;
+						regulator-suspend-microvolt = <0x16e360>;
+					};
+				};
+
+&io_domains {
+	vccio1-supply = <&vcc_backlight>;
+	vccio2-supply = <&vccio_sd>;
+	vccio3-supply = <&vcc1v8_soc>;
+	vccio4-supply = <&vcc_3v3>;
+	vccio5-supply = <&vcc_3v3>;
+	/delete-property/ vccio6-supply;
+};

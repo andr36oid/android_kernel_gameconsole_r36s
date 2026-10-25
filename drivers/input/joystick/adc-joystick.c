@@ -69,6 +69,7 @@ struct adc_joystick_state {
 	int old_x, old_y, x, y;
 	/* input device init value (mV) */
 	int abs_x_max, abs_x_min, abs_y_max, abs_y_min;
+	u32 abs_codes[2];
 
 	struct mutex lock;
 };
@@ -174,8 +175,8 @@ static void adc_joystick_poll(struct input_polled_dev *dev)
 	if ((abs(st->x - st->old_x) > st->threshold) ||
 	    (abs(st->y - st->old_y) > st->threshold)) {
 		/* report joystick event */
-		input_report_abs(dev->input, ABS_X, st->x);
-		input_report_abs(dev->input, ABS_Y, st->y);
+		input_report_abs(dev->input, st->abs_codes[0], st->x);
+		input_report_abs(dev->input, st->abs_codes[1], st->y);
 		input_sync(dev->input);
 		st->old_x = st->x;	st->old_y = st->y;
 	}
@@ -235,10 +236,10 @@ static int adc_joystick_register(struct platform_device *pdev,
 	input = poll_dev->input;
 
 	input->phys = "adc-joystick/input0";
-	input->name = pdev->name;
+	if (device_property_read_string(dev, "label", &input->name))
+		input->name = pdev->name;
 
 	input->evbit[0]  |= BIT_MASK(EV_ABS) | BIT_MASK(EV_KEY);
-	input->absbit[0] |= BIT_MASK(ABS_X)  | BIT_MASK(ABS_Y);
 
 	input->id.bustype = BUS_HOST;
 	input->id.vendor  = 0x0001;
@@ -246,8 +247,8 @@ static int adc_joystick_register(struct platform_device *pdev,
 	input->id.version = 0x0100;
 
 	input_set_capability(input, EV_KEY, BTN_JOYSTICK);
-	input_set_abs_params(input, ABS_X, st->abs_x_min, st->abs_x_max, 0, 0);
-	input_set_abs_params(input, ABS_Y, st->abs_y_min, st->abs_y_max, 0, 0);
+	input_set_abs_params(input, st->abs_codes[0], st->abs_x_min, st->abs_x_max, 0, 0);
+	input_set_abs_params(input, st->abs_codes[1], st->abs_y_min, st->abs_y_max, 0, 0);
 
 	error = input_register_polled_device(poll_dev);
 	if (error) {
@@ -270,6 +271,17 @@ static int adc_joystick_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	mutex_init(&st->lock);
+	st->abs_codes[0] = ABS_X;
+	st->abs_codes[1] = ABS_Y;
+	if (device_property_present(dev, "linux,abs-codes")) {
+		error = device_property_read_u32_array(dev, "linux,abs-codes",
+						     st->abs_codes, 2);
+		if (error)
+			return error;
+		if (st->abs_codes[0] > ABS_MAX || st->abs_codes[1] > ABS_MAX ||
+		    st->abs_codes[0] == st->abs_codes[1])
+			return -EINVAL;
+	}
 
 	for (i = 0; i < 2; i++) {
 		if (i)

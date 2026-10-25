@@ -1,0 +1,26 @@
+Direct ADC joystick
+
+Required properties:
+- compatible: "adc-joystick"
+- io-channels: two IIO voltage channels, X then Y
+- io-channel-names: "joy_x", "joy_y"
+
+Optional properties:
+- label: input device name
+- linux,abs-codes: two distinct Linux ABS event codes, each <= ABS_MAX.
+  Defaults to ABS_X, ABS_Y. Use ABS_RX, ABS_RY for a right stick.
+- poll-interval: milliseconds, defaults to 500
+- report-threshold: minimum change in millivolts, defaults to 2
+- report-x-min, report-y-min: minimum axis values, defaults to 0
+- report-x-max, report-y-max: maximum axis values, defaults to 1800
+
+Example:
+
+right-stick {
+	compatible = "adc-joystick";
+	label = "right stick";
+	io-channels = <&saradc 2>, <&saradc 3>;
+	io-channel-names = "joy_x", "joy_y";
+	linux,abs-codes = <ABS_RX ABS_RY>;
+	poll-interval = <30>;
+};

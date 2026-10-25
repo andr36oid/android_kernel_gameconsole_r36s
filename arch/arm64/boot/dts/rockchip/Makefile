@@ -86,6 +86,7 @@ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3326-r36s-clone-v22.dtb
 dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3326-r36s-clone-v30.dtb
 dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3326-r36s-clone-v30-2603.dtb
 dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3326-r36s-clone-y02.dtb
+dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3326-r36s-clone-grc802.dtb
 dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3328-box-liantong.dtb
 dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3328-box-liantong-avb.dtb
 dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3328-evb.dtb
