@@ -17,6 +17,7 @@
 #include <linux/delay.h>
 #include <linux/mfd/rk808.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_gpio.h>
 #include <linux/platform_device.h>
@@ -24,6 +25,7 @@
 #include <sound/core.h>
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
+#include <sound/tlv.h>
 #include "rk817_codec.h"
 
 static int dbg_enable;
@@ -65,6 +67,7 @@ MODULE_PARM_DESC(force_spk_hp,
  * 0xff: -95dB
  */
 #define OUT_VOLUME	(0x03)
+#define MASTER_VOLUME_MAX	0xff
 
 /*
  * DADC L/R volume setting
@@ -102,6 +105,9 @@ struct rk817_codec_priv {
 	unsigned int spk_volume;
 	unsigned int hp_volume;
 	unsigned int capture_volume;
+	bool hw_master_mode;
+	int master_volume;
+	struct mutex volume_lock;
 
 	bool mic_in_differential;
 	bool pdmdata_out_enable;
@@ -508,6 +514,122 @@ static SOC_ENUM_SINGLE_DECL(rk817_call_path_type,
 static SOC_ENUM_SINGLE_DECL(rk817_modem_input_type,
 	0, 0, rk817_modem_input_mode);
 
+/* The hardware step is 37.5 cB; TLV scale steps are integral cB. */
+static const DECLARE_TLV_DB_SCALE(rk817_master_tlv, -9690, 38, 0);
+
+/* volume_lock serializes control writes with path changes and resume. */
+static int rk817_write_volume(struct snd_soc_component *component,
+			      unsigned int volume)
+{
+	int ret;
+
+	ret = snd_soc_component_write(component, RK817_CODEC_DDAC_VOLL, volume);
+	if (ret < 0)
+		return ret;
+	return snd_soc_component_write(component, RK817_CODEC_DDAC_VOLR, volume);
+}
+
+static int rk817_active_path_volume(struct rk817_codec_priv *rk817)
+{
+	switch (rk817->playback_path) {
+	case RCV:
+	case SPK_PATH:
+	case RING_SPK:
+		return rk817->spk_volume;
+	case HP_PATH:
+	case HP_NO_MIC:
+	case RING_HP:
+	case RING_HP_NO_MIC:
+	case SPK_HP:
+	case RING_SPK_HP:
+		return rk817->hp_volume;
+	default:
+		return -1;
+	}
+}
+
+static int rk817_master_get(struct snd_kcontrol *kcontrol,
+			    struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct rk817_codec_priv *rk817 = snd_soc_component_get_drvdata(component);
+
+	mutex_lock(&rk817->volume_lock);
+	ucontrol->value.integer.value[0] = rk817->master_volume;
+	ucontrol->value.integer.value[1] = rk817->master_volume;
+	mutex_unlock(&rk817->volume_lock);
+	return 0;
+}
+
+static int rk817_master_put(struct snd_kcontrol *kcontrol,
+			    struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct rk817_codec_priv *rk817 = snd_soc_component_get_drvdata(component);
+	long left = ucontrol->value.integer.value[0];
+	long right = ucontrol->value.integer.value[1];
+	int value, ret = 0;
+
+	if (left < 0 || left > MASTER_VOLUME_MAX ||
+	    right < 0 || right > MASTER_VOLUME_MAX)
+		return -EINVAL;
+	mutex_lock(&rk817->volume_lock);
+	/* One shared master: accept either channel being changed by itself. */
+	value = left == rk817->master_volume ? right : left;
+	if (value != rk817->master_volume) {
+		if (rk817->hw_master_mode && rk817_active_path_volume(rk817) >= 0) {
+			ret = rk817_write_volume(component, MASTER_VOLUME_MAX - value);
+			if (ret < 0)
+				goto out;
+		}
+		rk817->master_volume = value;
+		ret = 1;
+	}
+out:
+	mutex_unlock(&rk817->volume_lock);
+	return ret;
+}
+
+static int rk817_master_switch_get(struct snd_kcontrol *kcontrol,
+				   struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct rk817_codec_priv *rk817 = snd_soc_component_get_drvdata(component);
+
+	mutex_lock(&rk817->volume_lock);
+	ucontrol->value.integer.value[0] = rk817->hw_master_mode;
+	mutex_unlock(&rk817->volume_lock);
+	return 0;
+}
+
+static int rk817_master_switch_put(struct snd_kcontrol *kcontrol,
+				   struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct rk817_codec_priv *rk817 = snd_soc_component_get_drvdata(component);
+	long value = ucontrol->value.integer.value[0];
+	int volume, ret = 0;
+
+	if (value != 0 && value != 1)
+		return -EINVAL;
+	mutex_lock(&rk817->volume_lock);
+	if (rk817->hw_master_mode != value) {
+		volume = rk817_active_path_volume(rk817);
+		if (volume >= 0) {
+			if (value)
+				volume = MASTER_VOLUME_MAX - rk817->master_volume;
+			ret = rk817_write_volume(component, volume);
+			if (ret < 0)
+				goto out;
+		}
+		rk817->hw_master_mode = value;
+		ret = 1;
+	}
+out:
+	mutex_unlock(&rk817->volume_lock);
+	return ret;
+}
+
 static int rk817_playback_path_get(struct snd_kcontrol *kcontrol,
 				   struct snd_ctl_elem_value *ucontrol)
 {
@@ -521,7 +643,7 @@ static int rk817_playback_path_get(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
-static int rk817_playback_path_put(struct snd_kcontrol *kcontrol,
+static int rk817_playback_path_put_locked(struct snd_kcontrol *kcontrol,
 				   struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
@@ -622,9 +744,11 @@ static int rk817_playback_path_put(struct snd_kcontrol *kcontrol,
 						      DACMT_ENABLE, DACMT_DISABLE);
 		}
 		snd_soc_component_write(component, RK817_CODEC_DDAC_VOLL,
-					rk817->spk_volume);
+					rk817->hw_master_mode ?
+					MASTER_VOLUME_MAX - rk817->master_volume : rk817->spk_volume);
 		snd_soc_component_write(component, RK817_CODEC_DDAC_VOLR,
-					rk817->spk_volume);
+					rk817->hw_master_mode ?
+					MASTER_VOLUME_MAX - rk817->master_volume : rk817->spk_volume);
 		break;
 	case HP_PATH:
 	case HP_NO_MIC:
@@ -653,9 +777,11 @@ static int rk817_playback_path_put(struct snd_kcontrol *kcontrol,
 					      DACMT_ENABLE, DACMT_DISABLE);
 
 		snd_soc_component_write(component, RK817_CODEC_DDAC_VOLL,
-					rk817->hp_volume);
+					rk817->hw_master_mode ?
+					MASTER_VOLUME_MAX - rk817->master_volume : rk817->hp_volume);
 		snd_soc_component_write(component, RK817_CODEC_DDAC_VOLR,
-					rk817->hp_volume);
+					rk817->hw_master_mode ?
+					MASTER_VOLUME_MAX - rk817->master_volume : rk817->hp_volume);
 		break;
 	case BT:
 		break;
@@ -690,15 +816,30 @@ static int rk817_playback_path_put(struct snd_kcontrol *kcontrol,
 		}
 
 		snd_soc_component_write(component, RK817_CODEC_DDAC_VOLL,
-					rk817->hp_volume);
+					rk817->hw_master_mode ?
+					MASTER_VOLUME_MAX - rk817->master_volume : rk817->hp_volume);
 		snd_soc_component_write(component, RK817_CODEC_DDAC_VOLR,
-					rk817->hp_volume);
+					rk817->hw_master_mode ?
+					MASTER_VOLUME_MAX - rk817->master_volume : rk817->hp_volume);
 		break;
 	default:
 		return -EINVAL;
 	}
 
 	return 0;
+}
+
+static int rk817_playback_path_put(struct snd_kcontrol *kcontrol,
+				   struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct rk817_codec_priv *rk817 = snd_soc_component_get_drvdata(component);
+	int ret;
+
+	mutex_lock(&rk817->volume_lock);
+	ret = rk817_playback_path_put_locked(kcontrol, ucontrol);
+	mutex_unlock(&rk817->volume_lock);
+	return ret;
 }
 
 static int rk817_capture_path_get(struct snd_kcontrol *kcontrol,
@@ -826,6 +967,21 @@ static struct snd_kcontrol_new rk817_snd_path_controls[] = {
 
 	SOC_ENUM_EXT("Capture MIC Path", rk817_capture_path_type,
 		     rk817_capture_path_get, rk817_capture_path_put),
+	SOC_DOUBLE_R_EXT_TLV("Master Playback Volume", RK817_CODEC_DDAC_VOLL,
+			     RK817_CODEC_DDAC_VOLR, 0, MASTER_VOLUME_MAX, 1,
+			     rk817_master_get, rk817_master_put, rk817_master_tlv),
+	/*
+	 * Same DAC volume exposed under a second name. ALSA's simple mixer
+	 * trims the " Volume" suffix, so this surfaces as the simple control
+	 * "Playback" - the name dArkOS's ogage hotkey daemon drives with
+	 * "amixer sset Playback". "Master" (above) is what EmulationStation
+	 * reads. Both share rk817_master_get/put, so they track one volume.
+	 */
+	SOC_DOUBLE_R_EXT_TLV("Playback Volume", RK817_CODEC_DDAC_VOLL,
+			     RK817_CODEC_DDAC_VOLR, 0, MASTER_VOLUME_MAX, 1,
+			     rk817_master_get, rk817_master_put, rk817_master_tlv),
+	SOC_SINGLE_BOOL_EXT("Playback Hardware Master Switch", 0,
+			    rk817_master_switch_get, rk817_master_switch_put),
 };
 
 static int rk817_set_dai_sysclk(struct snd_soc_dai *codec_dai,
@@ -1018,7 +1174,7 @@ static int rk817_suspend(struct snd_soc_component *component)
 	return 0;
 }
 
-static int rk817_resume(struct snd_soc_component *component)
+static int rk817_resume_locked(struct snd_soc_component *component)
 {
     struct rk817_codec_priv *rk817 = snd_soc_component_get_drvdata(component);
 	int type = 0;
@@ -1113,7 +1269,7 @@ static int rk817_resume(struct snd_soc_component *component)
 
 	/*
 	 * rk817_codec_power_up() wrote the power-up default volume (0x0a,
-	 * -3.75 dB) to the DAC. Put back the volume of the active path, as
+	 * -3.75 dB) to the DAC. Put back the selected volume, as
 	 * rk817_playback_path_put() does, so the loudness does not change
 	 * after a suspend (headphones got louder, the speaker quieter).
 	 */
@@ -1121,9 +1277,11 @@ static int rk817_resume(struct snd_soc_component *component)
 	case SPK_PATH:
 	case RING_SPK:
 		snd_soc_component_write(component, RK817_CODEC_DDAC_VOLL,
-					rk817->spk_volume);
+					rk817->hw_master_mode ?
+					MASTER_VOLUME_MAX - rk817->master_volume : rk817->spk_volume);
 		snd_soc_component_write(component, RK817_CODEC_DDAC_VOLR,
-					rk817->spk_volume);
+					rk817->hw_master_mode ?
+					MASTER_VOLUME_MAX - rk817->master_volume : rk817->spk_volume);
 		break;
 	case HP_PATH:
 	case HP_NO_MIC:
@@ -1132,15 +1290,28 @@ static int rk817_resume(struct snd_soc_component *component)
 	case SPK_HP:
 	case RING_SPK_HP:
 		snd_soc_component_write(component, RK817_CODEC_DDAC_VOLL,
-					rk817->hp_volume);
+					rk817->hw_master_mode ?
+					MASTER_VOLUME_MAX - rk817->master_volume : rk817->hp_volume);
 		snd_soc_component_write(component, RK817_CODEC_DDAC_VOLR,
-					rk817->hp_volume);
+					rk817->hw_master_mode ?
+					MASTER_VOLUME_MAX - rk817->master_volume : rk817->hp_volume);
 		break;
 	default:
 		break;
 	}
 
 	return 0;
+}
+
+static int rk817_resume(struct snd_soc_component *component)
+{
+	struct rk817_codec_priv *rk817 = snd_soc_component_get_drvdata(component);
+	int ret;
+
+	mutex_lock(&rk817->volume_lock);
+	ret = rk817_resume_locked(component);
+	mutex_unlock(&rk817->volume_lock);
+	return ret;
 }
 
 static int rk817_probe(struct snd_soc_component *component)
@@ -1330,6 +1501,7 @@ static int rk817_platform_probe(struct platform_device *pdev)
 					GFP_KERNEL);
 	if (!rk817_codec_data)
 		return -ENOMEM;
+	mutex_init(&rk817_codec_data->volume_lock);
 
 	platform_set_drvdata(pdev, rk817_codec_data);
 
@@ -1339,6 +1511,8 @@ static int rk817_platform_probe(struct platform_device *pdev)
 			__func__, ret);
 		goto err_;
 	}
+	rk817_codec_data->master_volume = MASTER_VOLUME_MAX -
+		min(rk817_codec_data->spk_volume, (unsigned int)MASTER_VOLUME_MAX);
 
 	rk817_codec_data->regmap = devm_regmap_init_i2c(rk817->i2c,
 					    &rk817_codec_regmap_config);
