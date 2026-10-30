@@ -27,6 +27,7 @@
 #include <linux/init.h>
 #include <linux/device.h>
 #include <linux/cdev.h>
+#include "andr36oid-guest.h"
 
 MODULE_AUTHOR("Vojtech Pavlik <vojtech@ucw.cz>");
 MODULE_DESCRIPTION("Joystick device interfaces");
@@ -60,6 +61,10 @@ struct joydev {
 };
 
 struct joydev_client {
+	bool guest;
+	unsigned int nkey;
+	__u16 guest_keys[KEY_CNT];
+	__u16 guest_raw[KEY_CNT];
 	struct js_event buffer[JOYDEV_BUFFER_SIZE];
 	int head;
 	int tail;
@@ -102,7 +107,7 @@ static void joydev_pass_event(struct joydev_client *client,
 
 	client->buffer[client->head] = *event;
 
-	if (client->startup == joydev->nabs + joydev->nkey) {
+	if (client->startup == joydev->nabs + client->nkey) {
 		client->head++;
 		client->head &= JOYDEV_BUFFER_SIZE - 1;
 		if (client->tail == client->head)
@@ -121,6 +126,26 @@ static void joydev_event(struct input_handle *handle,
 	struct joydev_client *client;
 	struct js_event event;
 
+	/* Keyboard-coded directions/Fn are absent from the host joystick map.
+	 * Deliver the complete native button set to guest readers separately. */
+	if (type == EV_KEY && value != 2) {
+		unsigned int n;
+		event.time = jiffies_to_msecs(jiffies);
+		event.type = JS_EVENT_BUTTON;
+		event.value = value;
+		rcu_read_lock();
+		list_for_each_entry_rcu(client, &joydev->client_list, node) {
+			if (!client->guest) continue;
+			for (n = 0; n < client->nkey; n++)
+				if (client->guest_raw[n] == code) {
+					event.number = n;
+					joydev_pass_event(client, &event);
+					break;
+				}
+		}
+		rcu_read_unlock();
+		wake_up_interruptible(&joydev->wait);
+	}
 	switch (type) {
 
 	case EV_KEY:
@@ -149,7 +174,8 @@ static void joydev_event(struct input_handle *handle,
 
 	rcu_read_lock();
 	list_for_each_entry_rcu(client, &joydev->client_list, node)
-		joydev_pass_event(client, &event);
+		if (!(client->guest && type == EV_KEY))
+			joydev_pass_event(client, &event);
 	rcu_read_unlock();
 
 	wake_up_interruptible(&joydev->wait);
@@ -272,6 +298,24 @@ static int joydev_open(struct inode *inode, struct file *file)
 
 	spin_lock_init(&client->buffer_lock);
 	client->joydev = joydev;
+	client->guest = a36_guest_pad(joydev->handle.dev);
+	client->nkey = joydev->nkey;
+	if (client->guest) {
+		unsigned int raw, code, n;
+		DECLARE_BITMAP(keys, KEY_CNT);
+		a36_guest_bits(keys, joydev->handle.dev->keybit);
+		client->nkey = 0;
+		for_each_set_bit(code, keys, KEY_CNT) {
+			if (code < BTN_MISC || client->nkey == 255) continue;
+			n = client->nkey++;
+			client->guest_keys[n] = code;
+			for_each_set_bit(raw, joydev->handle.dev->keybit, KEY_CNT)
+				if (a36_guest_key(raw) == code) {
+					client->guest_raw[n] = raw;
+					break;
+				}
+		}
+	}
 	joydev_attach_client(joydev, client);
 
 	error = joydev_open_device(joydev);
@@ -298,19 +342,19 @@ static int joydev_generate_startup_event(struct joydev_client *client,
 
 	spin_lock_irq(&client->buffer_lock);
 
-	have_event = client->startup < joydev->nabs + joydev->nkey;
+	have_event = client->startup < joydev->nabs + client->nkey;
 
 	if (have_event) {
 
 		event->time = jiffies_to_msecs(jiffies);
-		if (client->startup < joydev->nkey) {
+		if (client->startup < client->nkey) {
 			event->type = JS_EVENT_BUTTON | JS_EVENT_INIT;
 			event->number = client->startup;
-			event->value = !!test_bit(joydev->keypam[event->number],
+			event->value = !!test_bit(client->guest ? client->guest_raw[event->number] : joydev->keypam[event->number],
 						  input->key);
 		} else {
 			event->type = JS_EVENT_AXIS | JS_EVENT_INIT;
-			event->number = client->startup - joydev->nkey;
+			event->number = client->startup - client->nkey;
 			event->value = joydev->abs[event->number];
 		}
 		client->startup++;
@@ -355,9 +399,9 @@ static ssize_t joydev_0x_read(struct joydev_client *client,
 	/*
 	 * Get device state
 	 */
-	for (data.buttons = i = 0; i < 32 && i < joydev->nkey; i++)
+	for (data.buttons = i = 0; i < 32 && i < client->nkey; i++)
 		data.buttons |=
-			test_bit(joydev->keypam[i], input->key) ? (1 << i) : 0;
+			test_bit(client->guest ? client->guest_raw[i] : joydev->keypam[i], input->key) ? (1 << i) : 0;
 	data.x = (joydev->abs[0] / 256 + 128) >> joydev->glue.JS_CORR.x;
 	data.y = (joydev->abs[1] / 256 + 128) >> joydev->glue.JS_CORR.y;
 
@@ -381,7 +425,7 @@ static inline int joydev_data_pending(struct joydev_client *client)
 {
 	struct joydev *joydev = client->joydev;
 
-	return client->startup < joydev->nabs + joydev->nkey ||
+	return client->startup < joydev->nabs + client->nkey ||
 		client->head != client->tail;
 }
 
@@ -512,9 +556,10 @@ static int joydev_handle_JSIOCSBTNMAP(struct joydev *joydev,
 }
 
 
-static int joydev_ioctl_common(struct joydev *joydev,
+static int joydev_ioctl_common(struct joydev_client *client,
 				unsigned int cmd, void __user *argp)
 {
+	struct joydev *joydev = client->joydev;
 	struct input_dev *dev = joydev->handle.dev;
 	size_t len;
 	int i;
@@ -544,7 +589,7 @@ static int joydev_ioctl_common(struct joydev *joydev,
 		return put_user(joydev->nabs, (__u8 __user *) argp);
 
 	case JSIOCGBUTTONS:
-		return put_user(joydev->nkey, (__u8 __user *) argp);
+		return put_user(client->nkey, (__u8 __user *) argp);
 
 	case JSIOCSCORR:
 		if (copy_from_user(joydev->corr, argp,
@@ -582,7 +627,7 @@ static int joydev_ioctl_common(struct joydev *joydev,
 
 	case (JSIOCGBTNMAP & ~IOCSIZE_MASK):
 		len = min_t(size_t, _IOC_SIZE(cmd), sizeof(joydev->keypam));
-		return copy_to_user(argp, joydev->keypam, len) ? -EFAULT : len;
+		return copy_to_user(argp, client->guest ? client->guest_keys : joydev->keypam, len) ? -EFAULT : len;
 
 	case JSIOCGNAME(0):
 		name = dev->name;
@@ -607,6 +652,9 @@ static long joydev_compat_ioctl(struct file *file,
 	struct JS_DATA_SAVE_TYPE_32 ds32;
 	int retval;
 
+	if (READ_ONCE(task_active_pid_ns(current)->andr36oid_guest) &&
+	    _IOC_DIR(cmd) != _IOC_READ)
+		return -EPERM;
 	retval = mutex_lock_interruptible(&joydev->mutex);
 	if (retval)
 		return retval;
@@ -654,7 +702,7 @@ static long joydev_compat_ioctl(struct file *file,
 		break;
 
 	default:
-		retval = joydev_ioctl_common(joydev, cmd, argp);
+		retval = joydev_ioctl_common(client, cmd, argp);
 		break;
 	}
 
@@ -672,6 +720,9 @@ static long joydev_ioctl(struct file *file,
 	void __user *argp = (void __user *)arg;
 	int retval;
 
+	if (READ_ONCE(task_active_pid_ns(current)->andr36oid_guest) &&
+	    _IOC_DIR(cmd) != _IOC_READ)
+		return -EPERM;
 	retval = mutex_lock_interruptible(&joydev->mutex);
 	if (retval)
 		return retval;
@@ -704,7 +755,7 @@ static long joydev_ioctl(struct file *file,
 		break;
 
 	default:
-		retval = joydev_ioctl_common(joydev, cmd, argp);
+		retval = joydev_ioctl_common(client, cmd, argp);
 		break;
 	}
  out:

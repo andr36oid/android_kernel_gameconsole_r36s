@@ -22,6 +22,8 @@ enum { /* definitions for pid_namespace's hide_pid field */
 };
 
 struct pid_namespace {
+	/* Opt-in input ABI for this container; init_pid_ns is never eligible. */
+	bool andr36oid_guest;
 	struct kref kref;
 	struct idr idr;
 	struct rcu_head rcu;

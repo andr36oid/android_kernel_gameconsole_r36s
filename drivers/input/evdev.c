@@ -28,6 +28,7 @@
 #include <linux/device.h>
 #include <linux/cdev.h>
 #include "input-compat.h"
+#include "andr36oid-guest.h"
 
 struct evdev {
 	int open;
@@ -52,6 +53,8 @@ struct evdev_client {
 	struct list_head node;
 	enum input_clock_type clk_type;
 	bool revoked;
+	bool guest_pad;
+	bool guest;
 	unsigned long *evmasks[EV_CNT];
 	unsigned int bufsize;
 	struct input_event buffer[];
@@ -270,7 +273,9 @@ static void evdev_pass_values(struct evdev_client *client,
 	spin_lock(&client->buffer_lock);
 
 	for (v = vals; v != vals + count; v++) {
-		if (__evdev_is_filtered(client, v->type, v->code))
+		event.code = client->guest_pad && v->type == EV_KEY ?
+			a36_guest_key(v->code) : v->code;
+		if (__evdev_is_filtered(client, v->type, event.code))
 			continue;
 
 		if (v->type == EV_SYN && v->code == SYN_REPORT) {
@@ -282,7 +287,7 @@ static void evdev_pass_values(struct evdev_client *client,
 		}
 
 		event.type = v->type;
-		event.code = v->code;
+
 		event.value = v->value;
 		__pass_event(client, &event);
 	}
@@ -493,6 +498,8 @@ static int evdev_open(struct inode *inode, struct file *file)
 	client->bufsize = bufsize;
 	spin_lock_init(&client->buffer_lock);
 	client->evdev = evdev;
+	client->guest_pad = a36_guest_pad(evdev->handle.dev);
+	client->guest = READ_ONCE(task_active_pid_ns(current)->andr36oid_guest);
 	evdev_attach_client(evdev, client);
 
 	error = evdev_open_device(evdev);
@@ -518,6 +525,8 @@ static ssize_t evdev_write(struct file *file, const char __user *buffer,
 	struct input_event event;
 	int retval = 0;
 
+	if (client->guest || READ_ONCE(task_active_pid_ns(current)->andr36oid_guest))
+		return -EPERM;
 	if (count != 0 && count < input_event_size())
 		return -EINVAL;
 
@@ -810,7 +819,7 @@ static int handle_eviocgbit(struct input_dev *dev,
 	return bits_to_user(bits, len, size, p, compat_mode);
 }
 
-static int evdev_handle_get_keycode(struct input_dev *dev, void __user *p)
+static int evdev_handle_get_keycode(struct input_dev *dev, void __user *p, bool guest)
 {
 	struct input_keymap_entry ke = {
 		.len	= sizeof(unsigned int),
@@ -827,13 +836,15 @@ static int evdev_handle_get_keycode(struct input_dev *dev, void __user *p)
 	if (error)
 		return error;
 
+	if (guest)
+		ke.keycode = a36_guest_key(ke.keycode);
 	if (put_user(ke.keycode, ip + 1))
 		return -EFAULT;
 
 	return 0;
 }
 
-static int evdev_handle_get_keycode_v2(struct input_dev *dev, void __user *p)
+static int evdev_handle_get_keycode_v2(struct input_dev *dev, void __user *p, bool guest)
 {
 	struct input_keymap_entry ke;
 	int error;
@@ -845,6 +856,8 @@ static int evdev_handle_get_keycode_v2(struct input_dev *dev, void __user *p)
 	if (error)
 		return error;
 
+	if (guest)
+		ke.keycode = a36_guest_key(ke.keycode);
 	if (copy_to_user(p, &ke, sizeof(ke)))
 		return -EFAULT;
 
@@ -910,7 +923,10 @@ static int evdev_handle_get_val(struct evdev_client *client,
 	spin_lock_irq(&dev->event_lock);
 	spin_lock(&client->buffer_lock);
 
-	bitmap_copy(mem, bits, maxbit);
+	if (client->guest_pad && type == EV_KEY)
+		a36_guest_bits(mem, bits);
+	else
+		bitmap_copy(mem, bits, maxbit);
 
 	spin_unlock(&dev->event_lock);
 
@@ -1051,6 +1067,21 @@ static long evdev_do_ioctl(struct file *file, unsigned int cmd,
 	unsigned int size;
 	int error;
 
+	/* Guest readers may not change Android's keymap, calibration or grabs. */
+	if (client->guest || READ_ONCE(task_active_pid_ns(current)->andr36oid_guest)) {
+		if (cmd == EVIOCGRAB) return 0;
+		if (cmd == EVIOCSKEYCODE || cmd == EVIOCSKEYCODE_V2 ||
+		    cmd == EVIOCSREP ||
+		    (_IOC_TYPE(cmd) == 'E' && _IOC_DIR(cmd) == _IOC_WRITE &&
+		     (_IOC_NR(cmd) & ~ABS_MAX) == _IOC_NR(EVIOCSABS(0))))
+			return -EPERM;
+	}
+	if (client->guest_pad && _IOC_TYPE(cmd) == 'E' &&
+	    _IOC_DIR(cmd) == _IOC_READ && _IOC_NR(cmd) == _IOC_NR(EVIOCGBIT(EV_KEY, 0))) {
+		DECLARE_BITMAP(keys, KEY_CNT);
+		a36_guest_bits(keys, dev->keybit);
+		return bits_to_user(keys, KEY_MAX, _IOC_SIZE(cmd), p, compat_mode);
+	}
 	/* First we check for fixed-length commands */
 	switch (cmd) {
 
@@ -1137,13 +1168,13 @@ static long evdev_do_ioctl(struct file *file, unsigned int cmd,
 		return evdev_set_clk_type(client, i);
 
 	case EVIOCGKEYCODE:
-		return evdev_handle_get_keycode(dev, p);
+		return evdev_handle_get_keycode(dev, p, client->guest_pad);
 
 	case EVIOCSKEYCODE:
 		return evdev_handle_set_keycode(dev, p);
 
 	case EVIOCGKEYCODE_V2:
-		return evdev_handle_get_keycode_v2(dev, p);
+		return evdev_handle_get_keycode_v2(dev, p, client->guest_pad);
 
 	case EVIOCSKEYCODE_V2:
 		return evdev_handle_set_keycode_v2(dev, p);

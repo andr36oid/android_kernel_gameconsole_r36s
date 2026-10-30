@@ -11,6 +11,7 @@
 #include <linux/mman.h>
 #include <linux/reboot.h>
 #include <linux/prctl.h>
+#include <linux/pid_namespace.h>
 #include <linux/highuid.h>
 #include <linux/fs.h>
 #include <linux/kmod.h>
@@ -2436,6 +2437,17 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 
 	error = 0;
 	switch (option) {
+	case PR_ANDR36OID_GUEST:
+		if (arg3 || arg4 || arg5 || arg2 > 1)
+			return -EINVAL;
+		if (!arg2)
+			return task_active_pid_ns(me)->andr36oid_guest;
+		if (task_active_pid_ns(me) == &init_pid_ns ||
+		    task_pid_nr_ns(me, task_active_pid_ns(me)) != 1 ||
+		    !capable(CAP_SYS_ADMIN))
+			return -EPERM;
+		WRITE_ONCE(task_active_pid_ns(me)->andr36oid_guest, true);
+		return 0;
 	case PR_SET_PDEATHSIG:
 		if (!valid_signal(arg2)) {
 			error = -EINVAL;

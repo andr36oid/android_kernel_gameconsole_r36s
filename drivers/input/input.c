@@ -28,6 +28,7 @@
 #include <linux/mutex.h>
 #include <linux/rcupdate.h>
 #include "input-compat.h"
+#include "andr36oid-guest.h"
 
 MODULE_AUTHOR("Vojtech Pavlik <vojtech@suse.cz>");
 MODULE_DESCRIPTION("Input core");
@@ -1180,8 +1181,15 @@ static int input_devices_seq_show(struct seq_file *seq, void *v)
 	input_seq_print_bitmap(seq, "PROP", dev->propbit, INPUT_PROP_MAX);
 
 	input_seq_print_bitmap(seq, "EV", dev->evbit, EV_MAX);
-	if (test_bit(EV_KEY, dev->evbit))
-		input_seq_print_bitmap(seq, "KEY", dev->keybit, KEY_MAX);
+	if (test_bit(EV_KEY, dev->evbit)) {
+		if (a36_guest_pad(dev)) {
+			DECLARE_BITMAP(keys, KEY_CNT);
+			a36_guest_bits(keys, dev->keybit);
+			input_seq_print_bitmap(seq, "KEY", keys, KEY_MAX);
+		} else {
+			input_seq_print_bitmap(seq, "KEY", dev->keybit, KEY_MAX);
+		}
+	}
 	if (test_bit(EV_REL, dev->evbit))
 		input_seq_print_bitmap(seq, "REL", dev->relbit, REL_MAX);
 	if (test_bit(EV_ABS, dev->evbit))
@@ -1355,7 +1363,7 @@ static int input_print_modalias_bits(char *buf, int size,
 }
 
 static int input_print_modalias_parts(char *buf, int size, int full_len,
-				      struct input_dev *id)
+				      struct input_dev *id, unsigned long *keys)
 {
 	int len, klen, remainder, space;
 
@@ -1374,7 +1382,7 @@ static int input_print_modalias_parts(char *buf, int size, int full_len,
 	space = max(size - (len + 1), 0);
 
 	klen = input_print_modalias_bits(buf + len, size - len,
-				'k', id->keybit, KEY_MIN_INTERESTING, KEY_MAX);
+				'k', keys, KEY_MIN_INTERESTING, KEY_MAX);
 	len += klen;
 
 	/*
@@ -1427,7 +1435,8 @@ static int input_print_modalias_parts(char *buf, int size, int full_len,
 	return len;
 }
 
-static int input_print_modalias(char *buf, int size, struct input_dev *id)
+static int input_print_modalias(char *buf, int size, struct input_dev *id,
+				unsigned long *keys)
 {
 	int full_len;
 
@@ -1439,8 +1448,8 @@ static int input_print_modalias(char *buf, int size, struct input_dev *id)
 	 * can (without trimming key data) into the buffer and leave it to
 	 * the caller to figure out what to do with the result.
 	 */
-	full_len = input_print_modalias_parts(NULL, 0, 0, id);
-	return input_print_modalias_parts(buf, size, full_len, id);
+	full_len = input_print_modalias_parts(NULL, 0, 0, id, keys);
+	return input_print_modalias_parts(buf, size, full_len, id, keys);
 }
 
 static ssize_t input_dev_show_modalias(struct device *dev,
@@ -1448,9 +1457,15 @@ static ssize_t input_dev_show_modalias(struct device *dev,
 				       char *buf)
 {
 	struct input_dev *id = to_input_dev(dev);
+	DECLARE_BITMAP(keys, KEY_CNT);
+	unsigned long *bits = id->keybit;
 	ssize_t len;
 
-	len = input_print_modalias(buf, PAGE_SIZE, id);
+	if (a36_guest_pad(id)) {
+		a36_guest_bits(keys, bits);
+		bits = keys;
+	}
+	len = input_print_modalias(buf, PAGE_SIZE, id, bits);
 	if (len < PAGE_SIZE - 2)
 		len += snprintf(buf + len, PAGE_SIZE - len, "\n");
 
@@ -1556,7 +1571,22 @@ static ssize_t input_dev_show_cap_##bm(struct device *dev,		\
 static DEVICE_ATTR(bm, S_IRUGO, input_dev_show_cap_##bm, NULL)
 
 INPUT_DEV_CAP_ATTR(EV, ev);
-INPUT_DEV_CAP_ATTR(KEY, key);
+static ssize_t input_dev_show_cap_key(struct device *device,
+				     struct device_attribute *attr, char *buf)
+{
+	struct input_dev *dev = to_input_dev(device);
+	DECLARE_BITMAP(keys, KEY_CNT);
+	unsigned long *bits = dev->keybit;
+	int len;
+
+	if (a36_guest_pad(dev)) {
+		a36_guest_bits(keys, bits);
+		bits = keys;
+	}
+	len = input_print_bitmap(buf, PAGE_SIZE, bits, KEY_MAX, true);
+	return min_t(int, len, PAGE_SIZE);
+}
+static DEVICE_ATTR(key, S_IRUGO, input_dev_show_cap_key, NULL);
 INPUT_DEV_CAP_ATTR(REL, rel);
 INPUT_DEV_CAP_ATTR(ABS, abs);
 INPUT_DEV_CAP_ATTR(MSC, msc);
@@ -1653,7 +1683,7 @@ static int input_add_uevent_modalias_var(struct kobj_uevent_env *env,
 	len = input_print_modalias(&env->buf[env->buflen - 1],
 				   (int)sizeof(env->buf) - env->buflen -
 					UEVENT_ENV_EXTRA_LEN,
-				   dev);
+				   dev, dev->keybit);
 	if (len >= ((int)sizeof(env->buf) - env->buflen -
 					UEVENT_ENV_EXTRA_LEN))
 		return -ENOMEM;
