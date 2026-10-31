@@ -1675,6 +1675,7 @@ static ssize_t uevent_show(struct device *dev, struct device_attribute *attr,
 	env = kzalloc(sizeof(struct kobj_uevent_env), GFP_KERNEL);
 	if (!env)
 		return -ENOMEM;
+	env->sysfs_read = true;
 
 	/* Synchronize with really_probe() */
 	device_lock(dev);

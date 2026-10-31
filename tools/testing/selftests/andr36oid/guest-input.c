@@ -41,6 +41,22 @@ static int proc_caps(unsigned long *bits) {
     }
     fclose(f);return result;
 }
+static int uevent_caps(const char *event,unsigned long *bits) {
+    char path[256],line[4096],alias[4096]="",separate[4096];
+    const char *name=strrchr(event,'/');if(!name)return -1;
+    snprintf(path,sizeof(path),"/sys/class/input/%s/device/uevent",name+1);
+    FILE *f=fopen(path,"r");if(!f)return -1;
+    int result=-1;
+    while(fgets(line,sizeof(line),f)) {
+        if(!strncmp(line,"KEY=",4))result=parse_caps(line+4,bits);
+        if(!strncmp(line,"MODALIAS=",9))snprintf(alias,sizeof(alias),"%s",line+9);
+    }
+    fclose(f);
+    snprintf(path,sizeof(path),"/sys/class/input/%s/device/modalias",name+1);
+    f=fopen(path,"r");if(!f)return -1;
+    char *ok=fgets(separate,sizeof(separate),f);fclose(f);
+    return result || !*alias || !ok || strcmp(alias,separate)?-1:0;
+}
 int main(int argc,char **argv) {
     if(argc!=3) {fprintf(stderr,"usage: guest-input /dev/input/eventN /dev/input/jsN\n");return 2;}
     int fd=open(argv[1],O_RDONLY|O_NONBLOCK);unsigned long before[WORDS]={0},after[WORDS]={0};
@@ -58,6 +74,7 @@ int main(int argc,char **argv) {
         unsigned long sys[WORDS],proc[WORDS];
         if(sys_caps(argv[1],sys) || memcmp(after,sys,sizeof(after)))_exit(17);
         if(proc_caps(proc) || memcmp(after,proc,sizeof(after)))_exit(18);
+        if(uevent_caps(argv[1],sys) || memcmp(after,sys,sizeof(after)))_exit(19);
         /* A host fd inherited by the guest still has the host ABI. */
         unsigned long inherited[WORDS]={0};
         if(ioctl(fd,EVIOCGBIT(EV_KEY,sizeof(inherited)),inherited)<0 || memcmp(before,inherited,sizeof(before)))_exit(14);
@@ -71,5 +88,6 @@ int main(int argc,char **argv) {
     if(ioctl(fd,EVIOCGBIT(EV_KEY,sizeof(after)),after)<0 || memcmp(before,after,sizeof(before)))return 1;
     unsigned long sys[WORDS],proc[WORDS];
     if(sys_caps(argv[1],sys)||proc_caps(proc)||memcmp(before,sys,sizeof(before))||memcmp(before,proc,sizeof(before)))return 1;
-    puts("PASS: guest evdev/jsdev/proc/sysfs ABI, unchanged host and inherited evdev descriptors");return 0;
+    if(uevent_caps(argv[1],sys)||memcmp(before,sys,sizeof(before)))return 1;
+    puts("PASS: guest evdev/jsdev/proc/sysfs/uevent ABI, matching modalias views, unchanged host and inherited evdev descriptors");return 0;
 }

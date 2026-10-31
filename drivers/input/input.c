@@ -1673,7 +1673,8 @@ static int input_add_uevent_bm_var(struct kobj_uevent_env *env,
 #define UEVENT_ENV_EXTRA_LEN	96
 
 static int input_add_uevent_modalias_var(struct kobj_uevent_env *env,
-					 struct input_dev *dev)
+					 struct input_dev *dev,
+					 unsigned long *keys)
 {
 	int len;
 
@@ -1683,7 +1684,7 @@ static int input_add_uevent_modalias_var(struct kobj_uevent_env *env,
 	len = input_print_modalias(&env->buf[env->buflen - 1],
 				   (int)sizeof(env->buf) - env->buflen -
 					UEVENT_ENV_EXTRA_LEN,
-				   dev, dev->keybit);
+				   dev, keys);
 	if (len >= ((int)sizeof(env->buf) - env->buflen -
 					UEVENT_ENV_EXTRA_LEN))
 		return -ENOMEM;
@@ -1706,9 +1707,9 @@ static int input_add_uevent_modalias_var(struct kobj_uevent_env *env,
 			return err;					\
 	} while (0)
 
-#define INPUT_ADD_HOTPLUG_MODALIAS_VAR(dev)				\
+#define INPUT_ADD_HOTPLUG_MODALIAS_VAR(dev, keys)			\
 	do {								\
-		int err = input_add_uevent_modalias_var(env, dev);	\
+		int err = input_add_uevent_modalias_var(env, dev, keys); \
 		if (err)						\
 			return err;					\
 	} while (0)
@@ -1716,6 +1717,16 @@ static int input_add_uevent_modalias_var(struct kobj_uevent_env *env,
 static int input_dev_uevent(struct device *device, struct kobj_uevent_env *env)
 {
 	struct input_dev *dev = to_input_dev(device);
+	DECLARE_BITMAP(guest_keys, KEY_CNT);
+	unsigned long *keys = dev->keybit;
+
+	/* Only the read-time sysfs representation follows the reader's ABI.
+	 * A uinput registration or hotplug in guest context still broadcasts
+	 * host codes. Never mutate the shared input_dev capability bitmap. */
+	if (env->sysfs_read && a36_guest_pad(dev)) {
+		a36_guest_bits(guest_keys, keys);
+		keys = guest_keys;
+	}
 
 	INPUT_ADD_HOTPLUG_VAR("PRODUCT=%x/%x/%x/%x",
 				dev->id.bustype, dev->id.vendor,
@@ -1731,7 +1742,7 @@ static int input_dev_uevent(struct device *device, struct kobj_uevent_env *env)
 
 	INPUT_ADD_HOTPLUG_BM_VAR("EV=", dev->evbit, EV_MAX);
 	if (test_bit(EV_KEY, dev->evbit))
-		INPUT_ADD_HOTPLUG_BM_VAR("KEY=", dev->keybit, KEY_MAX);
+		INPUT_ADD_HOTPLUG_BM_VAR("KEY=", keys, KEY_MAX);
 	if (test_bit(EV_REL, dev->evbit))
 		INPUT_ADD_HOTPLUG_BM_VAR("REL=", dev->relbit, REL_MAX);
 	if (test_bit(EV_ABS, dev->evbit))
@@ -1747,7 +1758,7 @@ static int input_dev_uevent(struct device *device, struct kobj_uevent_env *env)
 	if (test_bit(EV_SW, dev->evbit))
 		INPUT_ADD_HOTPLUG_BM_VAR("SW=", dev->swbit, SW_MAX);
 
-	INPUT_ADD_HOTPLUG_MODALIAS_VAR(dev);
+	INPUT_ADD_HOTPLUG_MODALIAS_VAR(dev, keys);
 
 	return 0;
 }

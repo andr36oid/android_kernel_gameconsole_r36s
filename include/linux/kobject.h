@@ -162,6 +162,9 @@ struct kobj_uevent_env {
 	int envp_idx;
 	char buf[UEVENT_BUFFER_SIZE];
 	int buflen;
+	/* Attribute reads may have a namespace-specific view. Broadcast events
+	 * must always describe the global device, even in a guest caller. */
+	bool sysfs_read;
 };
 
 struct kset_uevent_ops {
