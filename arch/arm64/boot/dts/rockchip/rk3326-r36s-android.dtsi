@@ -1138,6 +1138,14 @@
 			pinctrl-0 = <&i2s1_2ch_mclk>;
 			hp-volume = <20>;
 			spk-volume = <3>;
+			/*
+			 * These consoles have no physical microphone, so route the ADC
+			 * from the internal playback mix (unity-gain digital loopback)
+			 * instead of the unwired MICIN pins. Without this, capture paths
+			 * (USB "Audio in" / soundboard) record silence. Absent on old
+			 * kernels = old behaviour, so it is safe for the 4.19.183 prebuilts.
+			 */
+			adc-for-loopback;
 			status = "okay";
 		};
 	};
