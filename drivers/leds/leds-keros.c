@@ -141,10 +141,20 @@ static void keros_apply_locked(struct keros_led *led, unsigned int mode)
 {
 	if (mode == 0) {
 		/*
-		 * Off means guaranteed dark: drop the control line and remove
-		 * power from the chip so it cannot sit in a lit default state.
+		 * Off. Dropping the enable GPIO does not cut LED power on this
+		 * board, so the chip keeps running its last autonomous effect
+		 * (breathing/rainbow) after a bare power-off. Command it dark
+		 * instead: power it if needed and pulse the init/reset frame,
+		 * which stops the running effect and leaves the rings dark until
+		 * an effect frame is sent. Keep the chip powered so it holds that
+		 * dark state; suspend/blank still use keros_power_off_locked.
 		 */
-		keros_power_off_locked(led);
+		if (!led->powered) {
+			gpiod_set_value(led->enable, 1);
+			msleep(KEROS_POWERUP_MS);
+			led->powered = true;
+		}
+		keros_pulse(led, KEROS_MODE_INIT);
 		led->mode = 0;
 		return;
 	}
