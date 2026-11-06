@@ -2,8 +2,9 @@ Seekwave SV6160 / Rockchip RK915 experimental 4.19 port
 
 Imported from the local codeberg.org/aenertia/sv6160-rk915 clone at
 3160b3242fe3155eaf6a5458943275b57c3dcd1f. Original copyright and GPL-2.0
-notices are retained. See seekwave-assessment.md at the kernel root for
-API changes, host compatibility, limitations and verification results.
+notices are retained. See the GRC802 bring-up and Seekwave assessment
+notes in the andr36oid clone-issue-3 report for API changes, host
+compatibility, limitations and verification results.
 
 This driver implements Wi-Fi only. Upstream scanning and association are
 incomplete. Compilation is not evidence of working radio communication.
