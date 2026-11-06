@@ -55,6 +55,16 @@
 /* unit (ms) */
 #define	DEFAULT_POLL_INTERVAL	500
 
+static const struct {
+	const char *channel_name;
+	const char *min_property;
+	const char *max_property;
+	unsigned int code;
+} right_axes[] = {
+	{ "joy_rx", "report-rx-min", "report-rx-max", ABS_RX },
+	{ "joy_ry", "report-ry-min", "report-ry-max", ABS_RY },
+};
+
 /*----------------------------------------------------------------------------*/
 struct adc_joystick_state {
 	/* saradc read channel : joy_x, joy_y */
@@ -71,6 +81,13 @@ struct adc_joystick_state {
 	int abs_x_max, abs_x_min, abs_y_max, abs_y_min;
 
 	struct mutex lock;
+
+	/* Optional direct SARADC channels for the right stick. */
+	struct {
+		struct iio_channel *channel;
+		int old_value, value;
+		int min, max;
+	} right[ARRAY_SIZE(right_axes)];
 };
 
 /*----------------------------------------------------------------------------*/
@@ -159,6 +176,47 @@ static struct attribute_group adc_joystick_attr_group = {
 };
 
 /*----------------------------------------------------------------------------*/
+static void adc_joystick_poll_right(struct input_polled_dev *dev)
+{
+	struct adc_joystick_state *st = dev->private;
+	bool changed = false;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(st->right); i++) {
+		if (st->right[i].channel &&
+		    iio_read_channel_processed(st->right[i].channel,
+					       &st->right[i].value)) {
+			pr_err("%s : read saradc channels!\n", __func__);
+			return;
+		}
+	}
+
+	mutex_lock(&st->lock);
+
+	for (i = 0; i < ARRAY_SIZE(st->right); i++) {
+		if (!st->right[i].channel)
+			continue;
+		if (abs(st->right[i].value - st->right[i].old_value) >
+		    st->threshold)
+			changed = true;
+	}
+
+	if (changed) {
+		for (i = 0; i < ARRAY_SIZE(st->right); i++) {
+			if (!st->right[i].channel)
+				continue;
+			input_report_abs(dev->input,
+					 right_axes[i].code,
+					 st->right[i].value);
+			st->right[i].old_value = st->right[i].value;
+		}
+		input_sync(dev->input);
+	}
+
+	mutex_unlock(&st->lock);
+}
+
+/*----------------------------------------------------------------------------*/
 static void adc_joystick_poll(struct input_polled_dev *dev)
 {
 	struct adc_joystick_state *st = dev->private;
@@ -184,6 +242,9 @@ static void adc_joystick_poll(struct input_polled_dev *dev)
 		dev->poll_interval = st->interval;
 
 	mutex_unlock(&st->lock);
+
+	if (st->right[0].channel || st->right[1].channel)
+		adc_joystick_poll_right(dev);
 }
 
 /*----------------------------------------------------------------------------*/
@@ -191,6 +252,7 @@ static void adc_joystick_dt_parse(struct platform_device *pdev,
 				struct adc_joystick_state *st)
 {
 	struct device *dev = &pdev->dev;
+	int i;
 
 	if (device_property_read_u32(dev, "poll-interval", &st->interval))
 		st->interval = DEFAULT_POLL_INTERVAL;
@@ -211,6 +273,19 @@ static void adc_joystick_dt_parse(struct platform_device *pdev,
 		st->threshold = DEFAULT_THRESHOLD;
 
 	st->old_x = st->old_y = st->x = st->y = 0;
+
+	for (i = 0; i < ARRAY_SIZE(st->right); i++) {
+		if (!st->right[i].channel)
+			continue;
+		if (device_property_read_u32(dev,
+					     right_axes[i].min_property,
+					     &st->right[i].min))
+			st->right[i].min = DEFAULT_ABS_MIN;
+		if (device_property_read_u32(dev,
+					     right_axes[i].max_property,
+					     &st->right[i].max))
+			st->right[i].max = DEFAULT_ABS_MAX;
+	}
 }
 
 /*----------------------------------------------------------------------------*/
@@ -220,7 +295,7 @@ static int adc_joystick_register(struct platform_device *pdev,
 	struct device *dev = &pdev->dev;
 	struct input_polled_dev *poll_dev;
 	struct input_dev *input;
-	int error;
+	int error, i;
 
 	poll_dev = devm_input_allocate_polled_device(dev);
 	if (!poll_dev) {
@@ -248,6 +323,13 @@ static int adc_joystick_register(struct platform_device *pdev,
 	input_set_capability(input, EV_KEY, BTN_JOYSTICK);
 	input_set_abs_params(input, ABS_X, st->abs_x_min, st->abs_x_max, 0, 0);
 	input_set_abs_params(input, ABS_Y, st->abs_y_min, st->abs_y_max, 0, 0);
+	for (i = 0; i < ARRAY_SIZE(st->right); i++) {
+		if (st->right[i].channel)
+			input_set_abs_params(input,
+					     right_axes[i].code,
+					     st->right[i].min, st->right[i].max,
+					     0, 0);
+	}
 
 	error = input_register_polled_device(poll_dev);
 	if (error) {
@@ -289,6 +371,29 @@ static int adc_joystick_probe(struct platform_device *pdev)
 
 		if (type != IIO_VOLTAGE) {
 			dev_err(dev, "Incompatible channel %d type %d\n", i, type);
+			return -EINVAL;
+		}
+	}
+	for (i = 0; i < ARRAY_SIZE(st->right); i++) {
+		const char *name = right_axes[i].channel_name;
+
+		/* Do not request extra channels on legacy two-axis DTs. */
+		if (of_property_match_string(dev->of_node, "io-channel-names",
+					     name) < 0)
+			continue;
+
+		st->right[i].channel = devm_iio_channel_get(dev, name);
+		if (IS_ERR(st->right[i].channel)) {
+			dev_err(dev, "iio channel %s get error\n", name);
+			return PTR_ERR(st->right[i].channel);
+		}
+		if (!st->right[i].channel->indio_dev)
+			return -ENXIO;
+		if (iio_get_channel_type(st->right[i].channel, &type))
+			return -EINVAL;
+		if (type != IIO_VOLTAGE) {
+			dev_err(dev, "Incompatible channel %s type %d\n",
+				name, type);
 			return -EINVAL;
 		}
 	}
