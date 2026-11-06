@@ -40,7 +40,11 @@ OBJS        =   src/main.o \
 ifeq ($(ROM),true)
 EXTRA_CFLAGS += -DRPU_SLEEP_ENABLE
 #EXTRA_CFLAGS += -DPS_SLEEP_TEST
-#EXTRA_CFLAGS += -DRPU_NO_SLEEP_FLAG
+# Force the RPU firmware to never deep-sleep. With sleep on (the vendor
+# default) the RK915 on the R36 Ultra misses keepalives and the AP deauths it
+# (802.11 reason 2) in a ~4 s connect/drop loop that never gets usable Wi-Fi.
+# No-sleep costs a little idle power but keeps the link up.
+EXTRA_CFLAGS += -DRPU_NO_SLEEP_FLAG
 #EXTRA_CFLAGS += -DRPU_ENABLE_PS
 else
 EXTRA_CFLAGS += -DNO_HP_READY_WAR

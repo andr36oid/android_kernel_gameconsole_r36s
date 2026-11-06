@@ -189,6 +189,14 @@ struct hal_priv {
 	int shutdown;
 
 	int during_pm_resume;
+	/*
+	 * Set when a mac80211 resume landed while the system was still inside
+	 * dpm_resume: poking the (deep-sleep-dead) M0 over SDIO there races the
+	 * SoC's own clock/regulator restore and hard-hangs the whole SoC on the
+	 * Ultra (rk915 SDIO). The wake is replayed from the PM_POST_SUSPEND
+	 * notifier instead, once resume has fully completed and clocks are stable.
+	 */
+	int defer_resume_wake;
 	struct notifier_block pm_notifier;
 };
 

@@ -73,6 +73,22 @@ check_all_cmd_done:
 	return 0;
 }
 
+/*
+ * Wake the firmware on resume. During a real system resume (during_pm_resume)
+ * the M0 did not survive deep sleep, so this SDIO write times out and kicks the
+ * fw recovery (power-cycle + re-download). Doing that while dpm_resume is still
+ * running races the SoC clock/regulator restore and hard-hangs the Ultra. Defer
+ * it to the PM_POST_SUSPEND notifier, which runs once resume has completed.
+ */
+static void rk915_resume_wake(struct hal_priv *priv)
+{
+	if (priv->during_pm_resume) {
+		priv->defer_resume_wake = 1;
+		return;
+	}
+	rk915_notify_pm(priv, 1);
+}
+
 int img_resume(struct ieee80211_hw *hw)
 
 {
@@ -109,7 +125,7 @@ int img_resume(struct ieee80211_hw *hw)
 
 	if (!priv->params->is_associated) {
 
-		rk915_notify_pm(hpriv, 1);
+		rk915_resume_wake(hpriv);
 
 		img_suspend_status = 0;
 
@@ -139,7 +155,7 @@ int img_resume(struct ieee80211_hw *hw)
 
 		RPU_INFO_UMACIF("%s: No active VIF found\n", __func__);
 
-		rk915_notify_pm(hpriv, 1);
+		rk915_resume_wake(hpriv);
 
 		img_suspend_status = 0;
 
@@ -151,7 +167,7 @@ int img_resume(struct ieee80211_hw *hw)
 
 	/* Notify firmware to wake up */
 
-	rk915_notify_pm(hpriv, 1);
+	rk915_resume_wake(hpriv);
 
 	hal_ops.disable_irq_wake();
 
