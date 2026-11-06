@@ -45,6 +45,8 @@
 #include <linux/delay.h>
 #include <linux/pwm.h>
 #include <linux/math64.h>
+#include <linux/hrtimer.h>
+#include <linux/power_supply.h>
 
 /*----------------------------------------------------------------------------*/
 #define DRV_NAME "odroidgo3_joypad"
@@ -224,6 +226,31 @@ struct joypad {
 	/* last raw reading and calibrated value per axis (see stick_axis) */
 	int stick_raw[STICK_AXES];
 	int stick_norm[STICK_AXES];
+
+	/*
+	 * Stick-ring RGB LEDs (R36 Ultra and clones that wire them). Plain
+	 * on/off GPIOs, so the effects engine software-PWMs them from an
+	 * hrtimer to get per-channel brightness (breathing, colour mixing).
+	 * One shared trio by default; an optional second ("right") trio lets
+	 * a board drive the two rings independently. See the LED_* block.
+	 */
+	bool led_have;				/* DT gave at least the shared trio */
+	bool led_dual;				/* DT gave an independent right trio */
+	struct gpio_desc *led_gpio[2][3];	/* [ring][0=R,1=G,2=B] */
+	struct hrtimer led_timer;		/* software-PWM carrier */
+	ktime_t led_substep;			/* carrier sub-step period */
+	spinlock_t led_lock;			/* guards mode/colour/duty */
+	int led_mode;				/* LED_MODE_* */
+	u8 led_color[2][3];			/* static/breathing target per ring */
+	u8 led_brightness;			/* 0..255 overall ceiling */
+	u8 led_speed;				/* 1..100 effect rate */
+	u32 led_phase;				/* animation phase */
+	u8 led_duty[2][3];			/* live duty 0..LED_PWM_STEPS */
+	u8 led_pwm_pos;				/* carrier position */
+	bool led_running;			/* carrier armed */
+	bool led_dead;				/* set in remove; blocks re-arm */
+	int led_batt_div;			/* battery-mode sample divider */
+	u8 led_batt_rgb[3];			/* cached battery-mode colour */
 };
 
 /*----------------------------------------------------------------------------*/
@@ -629,8 +656,8 @@ static ssize_t joypad_store_amux_debug(struct device *dev,
 
 	joypad->debug_ch = simple_strtoul(buf, NULL, 10);
 
-	/* if error than default setting(debug_ch = 0) */
-	if (joypad->debug_ch > joypad->amux_count)
+	/* valid channels are 0..amux_count-1; reset out-of-range to 0 */
+	if (joypad->debug_ch >= joypad->amux_count)
 		joypad->debug_ch = 0;
 
 	return count;
@@ -646,12 +673,17 @@ static ssize_t joypad_show_amux_debug(struct device *dev,
 	struct analog_mux *amux = joypad->amux;
 	ssize_t pos;
 	int value;
+	bool was_enabled;
 
 	mutex_lock(&joypad->lock);
 
-	/* disable poll driver */
-	if (joypad->enable)
-		joypad->enable = false;
+	/*
+	 * Pause the poll driver only for the duration of this read, then
+	 * restore it. Leaving it disabled would brick input on a shipped
+	 * device after a single diagnostic 'cat amux_debug'.
+	 */
+	was_enabled = joypad->enable;
+	joypad->enable = false;
 
 	if (joypad_amux_select(amux, joypad->debug_ch))
 		goto err_out;
@@ -667,6 +699,7 @@ static ssize_t joypad_show_amux_debug(struct device *dev,
 err_out:
 	pos = sprintf(buf, "error : amux setup & adc read!\n");
 out:
+	joypad->enable = was_enabled;
 	mutex_unlock(&joypad->lock);
 	return pos;
 }
@@ -1165,6 +1198,457 @@ static DEVICE_ATTR(rumble_strength, S_IWUSR | S_IRUGO,
 		   joypad_show_rumble_strength,
 		   joypad_store_rumble_strength);
 
+/*============================================================================*/
+/* Stick-ring RGB LED effects engine                                          */
+/*                                                                            */
+/* The rings are on/off GPIOs. A single hrtimer software-PWMs all channels so */
+/* we get per-channel brightness: that is what makes breathing fade smoothly  */
+/* and lets the three primaries mix into any colour (rainbow, stick hue). The */
+/* carrier only runs while something is lit; OFF stops it. The animation      */
+/* target (duty[]) is recomputed at the much slower poll rate in _tick().     */
+/*============================================================================*/
+#define LED_PWM_STEPS	32	/* brightness levels per channel */
+#define LED_REFRESH_HZ	100	/* full-cycle refresh; carrier = REFRESH*STEPS */
+#define LED_STICK_FULL	1800	/* stick magnitude mapped to full brightness */
+
+enum {
+	LED_MODE_OFF = 0,
+	LED_MODE_STATIC,
+	LED_MODE_BREATHING,
+	LED_MODE_RAINBOW,
+	LED_MODE_STICK,
+	LED_MODE_BATTERY,
+	LED_MODE_COUNT,
+};
+
+static const char *const led_mode_name[LED_MODE_COUNT] = {
+	"off", "static", "breathing", "rainbow", "stick", "battery",
+};
+
+/* h: 0..1535 (6*256), s/v: 0..255 -> out[R,G,B] 0..255. Integer only. */
+static void led_hsv2rgb(u16 h, u8 s, u8 v, u8 out[3])
+{
+	u16 region, rem, p, q, t;
+
+	if (!s) {
+		out[0] = out[1] = out[2] = v;
+		return;
+	}
+	h %= 1536;
+	region = h / 256;
+	rem = h % 256;
+	p = (u16)v * (255 - s) / 255;
+	q = (u16)v * (255 - (u16)s * rem / 256) / 255;
+	t = (u16)v * (255 - (u16)s * (256 - rem) / 256) / 255;
+	switch (region) {
+	case 0:	out[0] = v; out[1] = t; out[2] = p; break;
+	case 1:	out[0] = q; out[1] = v; out[2] = p; break;
+	case 2:	out[0] = p; out[1] = v; out[2] = t; break;
+	case 3:	out[0] = p; out[1] = q; out[2] = v; break;
+	case 4:	out[0] = t; out[1] = p; out[2] = v; break;
+	default:out[0] = v; out[1] = p; out[2] = q; break;
+	}
+}
+
+/* atan2 -> hue 0..1535, scale-free so the stick range does not matter. */
+static u16 led_dir_hue(int y, int x)
+{
+	long ax = abs(x), ay = abs(y);
+	long a;		/* angle within the octant, 0..256 */
+	u16 oct;
+
+	if (!ax && !ay)
+		return 0;
+	if (ax >= ay) {
+		a = ay * 256 / (ax ? ax : 1);		/* 0..256 */
+		oct = (x >= 0) ? (y >= 0 ? 0 : 7)
+			       : (y >= 0 ? 3 : 4);
+	} else {
+		a = ax * 256 / (ay ? ay : 1);
+		oct = (x >= 0) ? (y >= 0 ? 1 : 6)
+			       : (y >= 0 ? 2 : 5);
+	}
+	/* 8 octants of 192 hue units = 1536; fold a into the octant. */
+	switch (oct) {
+	case 0:	return (u16)(a * 192 / 256);
+	case 1:	return (u16)(192 + (256 - a) * 192 / 256);
+	case 2:	return (u16)(384 + a * 192 / 256);
+	case 3:	return (u16)(576 + (256 - a) * 192 / 256);
+	case 4:	return (u16)(768 + a * 192 / 256);
+	case 5:	return (u16)(960 + (256 - a) * 192 / 256);
+	case 6:	return (u16)(1152 + a * 192 / 256);
+	default:return (u16)(1344 + (256 - a) * 192 / 256);
+	}
+}
+
+/* scale a 0..255 channel by the brightness ceiling into a 0..STEPS duty. */
+static u8 led_duty_of(u8 chan, u8 bright)
+{
+	u32 d = (u32)chan * bright * LED_PWM_STEPS / (255 * 255);
+
+	return (u8)min_t(u32, d, LED_PWM_STEPS);
+}
+
+/* PWM carrier: toggles each channel's GPIO against its duty threshold. */
+static enum hrtimer_restart joypad_led_carrier(struct hrtimer *timer)
+{
+	struct joypad *joypad = container_of(timer, struct joypad, led_timer);
+	unsigned long flags;
+	int r, c;
+	u8 pos;
+
+	spin_lock_irqsave(&joypad->led_lock, flags);
+	pos = joypad->led_pwm_pos;
+	for (r = 0; r < 2; r++)
+		for (c = 0; c < 3; c++)
+			if (joypad->led_gpio[r][c])
+				gpiod_set_value(joypad->led_gpio[r][c],
+						joypad->led_duty[r][c] > pos);
+	joypad->led_pwm_pos = (pos + 1) % LED_PWM_STEPS;
+	spin_unlock_irqrestore(&joypad->led_lock, flags);
+
+	hrtimer_forward_now(timer, joypad->led_substep);
+	return HRTIMER_RESTART;
+}
+
+static void joypad_led_set_gpios(struct joypad *joypad, int value)
+{
+	int r, c;
+
+	for (r = 0; r < 2; r++)
+		for (c = 0; c < 3; c++)
+			if (joypad->led_gpio[r][c])
+				gpiod_set_value_cansleep(joypad->led_gpio[r][c],
+							 value);
+}
+
+/* battery-mode colour: sampled slowly, cached in led_batt_rgb. */
+static void joypad_led_sample_battery(struct joypad *joypad, u8 rgb[3])
+{
+	struct power_supply *psy = power_supply_get_by_name("battery");
+	union power_supply_propval cap = { .intval = 100 };
+	union power_supply_propval st = { .intval = POWER_SUPPLY_STATUS_UNKNOWN };
+
+	if (psy) {
+		power_supply_get_property(psy, POWER_SUPPLY_PROP_CAPACITY, &cap);
+		power_supply_get_property(psy, POWER_SUPPLY_PROP_STATUS, &st);
+		power_supply_put(psy);
+	}
+	if (st.intval == POWER_SUPPLY_STATUS_FULL || cap.intval >= 98) {
+		rgb[0] = 0; rgb[1] = 255; rgb[2] = 0;		/* green */
+	} else if (st.intval == POWER_SUPPLY_STATUS_CHARGING) {
+		rgb[0] = 255; rgb[1] = 120; rgb[2] = 0;		/* amber */
+	} else if (cap.intval <= 15) {
+		rgb[0] = 255; rgb[1] = 0; rgb[2] = 0;		/* red */
+	} else {
+		/* green->amber across the usable range */
+		u16 h = 42 + (u16)(100 - cap.intval) * 2;	/* ~green..amber */
+		led_hsv2rgb(h, 255, 255, rgb);
+	}
+}
+
+/*
+ * Recompute the live duty from the current mode and advance the animation.
+ * Runs at the poll rate (process context); the carrier reads the duty it
+ * writes. Starts/stops the carrier so a dark console costs nothing.
+ */
+static void joypad_led_tick(struct joypad *joypad)
+{
+	u8 rgb[2][3] = { { 0 } };
+	unsigned long flags;
+	int mode, r, c;
+	u8 bright, speed, color[2][3];
+	bool animated, any = false;
+
+	if (!joypad->led_have)
+		return;
+
+	spin_lock_irqsave(&joypad->led_lock, flags);
+	mode = joypad->led_mode;
+	bright = joypad->led_brightness;
+	speed = joypad->led_speed ? joypad->led_speed : 1;
+	memcpy(color, joypad->led_color, sizeof(color));
+	spin_unlock_irqrestore(&joypad->led_lock, flags);
+
+	animated = (mode == LED_MODE_BREATHING || mode == LED_MODE_RAINBOW ||
+		    mode == LED_MODE_STICK || mode == LED_MODE_BATTERY);
+
+	switch (mode) {
+	case LED_MODE_OFF:
+		break;
+	case LED_MODE_STATIC:
+		memcpy(rgb, color, sizeof(rgb));
+		break;
+	case LED_MODE_BREATHING: {
+		u32 ph = joypad->led_phase & 1023;
+		u32 e = ph < 512 ? ph : 1023 - ph;	/* 0..511 triangle */
+
+		e = e * 255 / 511;
+		e = e * e / 255;			/* gamma: dwell low */
+		for (r = 0; r < 2; r++)
+			for (c = 0; c < 3; c++)
+				rgb[r][c] = (u8)((u16)color[r][c] * e / 255);
+		joypad->led_phase += 1 + speed / 6;
+		break;
+	}
+	case LED_MODE_RAINBOW: {
+		u16 h = joypad->led_phase % 1536;
+
+		led_hsv2rgb(h, 255, 255, rgb[0]);
+		memcpy(rgb[1], rgb[0], 3);
+		joypad->led_phase += 1 + speed / 8;
+		break;
+	}
+	case LED_MODE_STICK: {
+		int x = READ_ONCE(joypad->stick_norm[0]);
+		int y = READ_ONCE(joypad->stick_norm[1]);
+		unsigned long m = int_sqrt((unsigned long)((s64)x * x +
+							   (s64)y * y));
+		u16 h = led_dir_hue(y, x);
+		u8 v = (u8)min_t(unsigned long, m * 255 / LED_STICK_FULL, 255);
+
+		/* a dim base so a centred stick still glows the accent colour */
+		if (v < 40) {
+			memcpy(rgb[0], color[0], 3);
+			for (c = 0; c < 3; c++)
+				rgb[0][c] = rgb[0][c] / 6;
+		} else {
+			led_hsv2rgb(h, 255, v, rgb[0]);
+		}
+		memcpy(rgb[1], rgb[0], 3);
+		break;
+	}
+	case LED_MODE_BATTERY:
+		if (--joypad->led_batt_div <= 0) {
+			joypad_led_sample_battery(joypad, joypad->led_batt_rgb);
+			joypad->led_batt_div = LED_REFRESH_HZ; /* ~1s */
+		}
+		/* gentle pulse so it reads as "alive" */
+		{
+			u32 ph = joypad->led_phase & 1023;
+			u32 e = ph < 512 ? ph : 1023 - ph;
+
+			e = 128 + e * 127 / 511;	/* 50%..100% */
+			for (c = 0; c < 3; c++)
+				rgb[0][c] = (u8)((u16)joypad->led_batt_rgb[c] *
+						 e / 255);
+			memcpy(rgb[1], rgb[0], 3);
+		}
+		joypad->led_phase += 1 + speed / 10;
+		break;
+	}
+
+	spin_lock_irqsave(&joypad->led_lock, flags);
+	for (r = 0; r < 2; r++)
+		for (c = 0; c < 3; c++) {
+			joypad->led_duty[r][c] = led_duty_of(rgb[r][c], bright);
+			if (joypad->led_duty[r][c])
+				any = true;
+		}
+	spin_unlock_irqrestore(&joypad->led_lock, flags);
+
+	/*
+	 * Serialise the carrier start/stop (a poll tick can race a sysfs
+	 * write). The mutex is never held by the hrtimer callback (it takes
+	 * only led_lock), so hrtimer_cancel() here cannot deadlock.
+	 */
+	mutex_lock(&joypad->lock);
+	if (mode != LED_MODE_OFF && (animated || any) && !joypad->led_dead) {
+		if (!joypad->led_running) {
+			joypad->led_pwm_pos = 0;
+			joypad->led_running = true;
+			hrtimer_start(&joypad->led_timer, joypad->led_substep,
+				      HRTIMER_MODE_REL);
+		}
+	} else if (joypad->led_running) {
+		joypad->led_running = false;
+		/*
+		 * Cancel under ->lock so a concurrent poll tick cannot slip in
+		 * between the store and the cancel and re-arm the carrier we are
+		 * about to kill. hrtimer_cancel() may sleep but the callback
+		 * takes only led_lock, so holding the mutex cannot deadlock.
+		 */
+		hrtimer_cancel(&joypad->led_timer);
+		joypad_led_set_gpios(joypad, 0);
+		mutex_unlock(&joypad->lock);
+		return;
+	}
+	mutex_unlock(&joypad->lock);
+}
+
+/*----------------------------------------------------------------------------*/
+static ssize_t joypad_show_led_mode(struct device *dev,
+				    struct device_attribute *attr, char *buf)
+{
+	struct joypad *joypad = platform_get_drvdata(to_platform_device(dev));
+
+	if (!joypad->led_have)
+		return sprintf(buf, "unsupported\n");
+	return sprintf(buf, "%s\n", led_mode_name[joypad->led_mode]);
+}
+
+static ssize_t joypad_store_led_mode(struct device *dev,
+				     struct device_attribute *attr,
+				     const char *buf, size_t count)
+{
+	struct joypad *joypad = platform_get_drvdata(to_platform_device(dev));
+	unsigned long flags;
+	int i, mode = -1;
+
+	if (!joypad->led_have)
+		return -ENODEV;
+	for (i = 0; i < LED_MODE_COUNT; i++)
+		if (sysfs_streq(buf, led_mode_name[i])) {
+			mode = i;
+			break;
+		}
+	if (mode < 0)
+		return -EINVAL;
+	spin_lock_irqsave(&joypad->led_lock, flags);
+	joypad->led_mode = mode;
+	joypad->led_phase = 0;
+	joypad->led_batt_div = 0;
+	spin_unlock_irqrestore(&joypad->led_lock, flags);
+	joypad_led_tick(joypad);
+	return count;
+}
+static DEVICE_ATTR(led_mode, S_IWUSR | S_IRUGO,
+		   joypad_show_led_mode, joypad_store_led_mode);
+
+static ssize_t joypad_show_led_color(struct device *dev,
+				     struct device_attribute *attr, char *buf)
+{
+	struct joypad *joypad = platform_get_drvdata(to_platform_device(dev));
+
+	return sprintf(buf, "%02x%02x%02x\n", joypad->led_color[0][0],
+		       joypad->led_color[0][1], joypad->led_color[0][2]);
+}
+
+static int joypad_parse_rgb(const char *buf, u8 rgb[3])
+{
+	unsigned int v;
+
+	if (kstrtouint(buf, 16, &v) || v > 0xffffff)
+		return -EINVAL;
+	rgb[0] = (v >> 16) & 0xff;
+	rgb[1] = (v >> 8) & 0xff;
+	rgb[2] = v & 0xff;
+	return 0;
+}
+
+static ssize_t joypad_store_led_color(struct device *dev,
+				      struct device_attribute *attr,
+				      const char *buf, size_t count)
+{
+	struct joypad *joypad = platform_get_drvdata(to_platform_device(dev));
+	unsigned long flags;
+	u8 rgb[3];
+
+	if (!joypad->led_have)
+		return -ENODEV;
+	if (joypad_parse_rgb(buf, rgb))
+		return -EINVAL;
+	spin_lock_irqsave(&joypad->led_lock, flags);
+	memcpy(joypad->led_color[0], rgb, 3);
+	if (!joypad->led_dual)
+		memcpy(joypad->led_color[1], rgb, 3);
+	spin_unlock_irqrestore(&joypad->led_lock, flags);
+	joypad_led_tick(joypad);
+	return count;
+}
+static DEVICE_ATTR(led_color, S_IWUSR | S_IRUGO,
+		   joypad_show_led_color, joypad_store_led_color);
+
+static ssize_t joypad_show_led_color_right(struct device *dev,
+					   struct device_attribute *attr,
+					   char *buf)
+{
+	struct joypad *joypad = platform_get_drvdata(to_platform_device(dev));
+
+	return sprintf(buf, "%02x%02x%02x\n", joypad->led_color[1][0],
+		       joypad->led_color[1][1], joypad->led_color[1][2]);
+}
+
+static ssize_t joypad_store_led_color_right(struct device *dev,
+					    struct device_attribute *attr,
+					    const char *buf, size_t count)
+{
+	struct joypad *joypad = platform_get_drvdata(to_platform_device(dev));
+	unsigned long flags;
+	u8 rgb[3];
+
+	if (!joypad->led_dual)
+		return -ENODEV;
+	if (joypad_parse_rgb(buf, rgb))
+		return -EINVAL;
+	spin_lock_irqsave(&joypad->led_lock, flags);
+	memcpy(joypad->led_color[1], rgb, 3);
+	spin_unlock_irqrestore(&joypad->led_lock, flags);
+	joypad_led_tick(joypad);
+	return count;
+}
+static DEVICE_ATTR(led_color_right, S_IWUSR | S_IRUGO,
+		   joypad_show_led_color_right, joypad_store_led_color_right);
+
+static ssize_t joypad_show_led_brightness(struct device *dev,
+					  struct device_attribute *attr,
+					  char *buf)
+{
+	struct joypad *joypad = platform_get_drvdata(to_platform_device(dev));
+
+	return sprintf(buf, "%d\n", joypad->led_brightness);
+}
+
+static ssize_t joypad_store_led_brightness(struct device *dev,
+					   struct device_attribute *attr,
+					   const char *buf, size_t count)
+{
+	struct joypad *joypad = platform_get_drvdata(to_platform_device(dev));
+	unsigned long flags;
+	unsigned int v;
+
+	if (!joypad->led_have)
+		return -ENODEV;
+	if (kstrtouint(buf, 10, &v))
+		return -EINVAL;
+	spin_lock_irqsave(&joypad->led_lock, flags);
+	joypad->led_brightness = (u8)min_t(unsigned int, v, 255);
+	spin_unlock_irqrestore(&joypad->led_lock, flags);
+	joypad_led_tick(joypad);
+	return count;
+}
+static DEVICE_ATTR(led_brightness, S_IWUSR | S_IRUGO,
+		   joypad_show_led_brightness, joypad_store_led_brightness);
+
+static ssize_t joypad_show_led_speed(struct device *dev,
+				     struct device_attribute *attr, char *buf)
+{
+	struct joypad *joypad = platform_get_drvdata(to_platform_device(dev));
+
+	return sprintf(buf, "%d\n", joypad->led_speed);
+}
+
+static ssize_t joypad_store_led_speed(struct device *dev,
+				      struct device_attribute *attr,
+				      const char *buf, size_t count)
+{
+	struct joypad *joypad = platform_get_drvdata(to_platform_device(dev));
+	unsigned long flags;
+	unsigned int v;
+
+	if (!joypad->led_have)
+		return -ENODEV;
+	if (kstrtouint(buf, 10, &v))
+		return -EINVAL;
+	spin_lock_irqsave(&joypad->led_lock, flags);
+	joypad->led_speed = (u8)clamp_t(unsigned int, v, 1, 100);
+	spin_unlock_irqrestore(&joypad->led_lock, flags);
+	return count;
+}
+static DEVICE_ATTR(led_speed, S_IWUSR | S_IRUGO,
+		   joypad_show_led_speed, joypad_store_led_speed);
+
+/*----------------------------------------------------------------------------*/
 static struct attribute *joypad_attrs[] = {
 	&dev_attr_poll_interval.attr,
 	&dev_attr_adc_fuzz.attr,
@@ -1184,6 +1668,11 @@ static struct attribute *joypad_attrs[] = {
 	&dev_attr_stick_swap.attr,
 	&dev_attr_stick_off.attr,
 	&dev_attr_stick_sensitivity.attr,
+	&dev_attr_led_mode.attr,
+	&dev_attr_led_color.attr,
+	&dev_attr_led_color_right.attr,
+	&dev_attr_led_brightness.attr,
+	&dev_attr_led_speed.attr,
 	NULL,
 };
 
@@ -1347,8 +1836,9 @@ static void joypad_adc_check(struct input_polled_dev *poll_dev)
 			WRITE_ONCE(joypad->stick_raw[axis], adc->value);
 			/* calibrated: reported for both sticks below */
 			if (cal.valid) {
-				joypad->stick_norm[axis] = stick_normalize(&cal,
-					axis, adc->value, adc->max);
+				WRITE_ONCE(joypad->stick_norm[axis],
+					stick_normalize(&cal, axis,
+							adc->value, adc->max));
 				continue;
 			}
 		}
@@ -1398,6 +1888,8 @@ static void joypad_poll(struct input_polled_dev *poll_dev)
 		joypad_gpio_check(poll_dev);
 		joypad_adc_check(poll_dev);
 	}
+	/* drive the stick-ring LED animation (independent of input enable) */
+	joypad_led_tick(joypad);
 	if (poll_dev->poll_interval != joypad->poll_interval) {
 		mutex_lock(&joypad->lock);
 		poll_dev->poll_interval = joypad->poll_interval;
@@ -1996,6 +2488,118 @@ static int joypad_rumble_setup(struct device *dev, struct joypad *joypad)
 	dev_info(dev, "rumble setup success!\n");
 	return 0;
 }
+/*----------------------------------------------------------------------------*/
+/*
+ * Stop the LED carrier and mark the engine dead. Registered as a devm action
+ * so it runs on BOTH probe-failure (devres unwind, remove() never called) and
+ * normal unbind, before devres frees the gpio descriptors and the joypad
+ * struct the hrtimer lives in. Without it, a probe failure after the carrier
+ * is armed (e.g. input_ff_create_memless() ENOMEM on a LED+rumble board such
+ * as the R36 Ultra) would leave the timer firing on freed memory.
+ */
+static void joypad_led_engine_stop(void *data)
+{
+	struct joypad *joypad = data;
+
+	mutex_lock(&joypad->lock);
+	joypad->led_dead = true;
+	joypad->led_running = false;
+	mutex_unlock(&joypad->lock);
+	hrtimer_cancel(&joypad->led_timer);
+	joypad_led_set_gpios(joypad, 0);
+}
+
+static int joypad_leds_setup(struct device *dev, struct joypad *joypad)
+{
+	static const char *const con[3]   = { "led-red", "led-green", "led-blue" };
+	static const char *const con_r[3] = { "led-red-right", "led-green-right",
+					      "led-blue-right" };
+	const char *mode_str = NULL;
+	int c, present = 0, present_r = 0;
+	u32 v;
+
+	spin_lock_init(&joypad->led_lock);
+	hrtimer_init(&joypad->led_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	joypad->led_timer.function = joypad_led_carrier;
+	joypad->led_substep =
+		ns_to_ktime(NSEC_PER_SEC / (LED_REFRESH_HZ * LED_PWM_STEPS));
+
+	/*
+	 * Arm teardown before anything can start the carrier, so even a
+	 * probe failure further down (or in a later probe step) unwinds it.
+	 */
+	if (devm_add_action_or_reset(dev, joypad_led_engine_stop, joypad))
+		return -ENOMEM;
+
+	for (c = 0; c < 3; c++) {
+		joypad->led_gpio[0][c] =
+			devm_gpiod_get_optional(dev, con[c], GPIOD_OUT_LOW);
+		if (IS_ERR(joypad->led_gpio[0][c])) {
+			int err = PTR_ERR(joypad->led_gpio[0][c]);
+
+			joypad->led_gpio[0][c] = NULL;
+			if (err == -EPROBE_DEFER)
+				return err;
+			dev_err(dev, "stick LED %s error %d\n", con[c], err);
+		} else if (joypad->led_gpio[0][c]) {
+			present++;
+		}
+	}
+	if (present == 0)
+		return 0;	/* no stick RGB on this board; engine dormant */
+	if (present != 3)
+		dev_warn(dev, "stick LED: only %d/3 shared channels wired\n",
+			 present);
+
+	for (c = 0; c < 3; c++) {
+		joypad->led_gpio[1][c] =
+			devm_gpiod_get_optional(dev, con_r[c], GPIOD_OUT_LOW);
+		if (IS_ERR(joypad->led_gpio[1][c]))
+			joypad->led_gpio[1][c] = NULL;
+		else if (joypad->led_gpio[1][c])
+			present_r++;
+	}
+	joypad->led_dual = (present_r == 3);
+	if (!joypad->led_dual)
+		for (c = 0; c < 3; c++)
+			joypad->led_gpio[1][c] = NULL;
+
+	joypad->led_have = true;
+
+	/* defaults; userspace writes the real system-accent colour at boot */
+	joypad->led_brightness = 160;
+	joypad->led_speed = 40;
+	joypad->led_mode = LED_MODE_STATIC;
+	joypad->led_color[0][0] = 0xff;		/* accent orange fallback */
+	joypad->led_color[0][1] = 0x7a;
+	joypad->led_color[0][2] = 0x00;
+	if (!device_property_read_u32(dev, "andr36oid,led-default-color", &v)) {
+		joypad->led_color[0][0] = (v >> 16) & 0xff;
+		joypad->led_color[0][1] = (v >> 8) & 0xff;
+		joypad->led_color[0][2] = v & 0xff;
+	}
+	memcpy(joypad->led_color[1], joypad->led_color[0], 3);
+	if (!device_property_read_u32(dev, "andr36oid,led-default-brightness",
+				      &v))
+		joypad->led_brightness = (u8)min_t(u32, v, 255);
+	if (!device_property_read_u32(dev, "andr36oid,led-default-speed", &v))
+		joypad->led_speed = (u8)clamp_t(u32, v, 1, 100);
+	if (!device_property_read_string(dev, "andr36oid,led-default-mode",
+					 &mode_str)) {
+		int i;
+
+		for (i = 0; i < LED_MODE_COUNT; i++)
+			if (!strcmp(mode_str, led_mode_name[i])) {
+				joypad->led_mode = i;
+				break;
+			}
+	}
+
+	dev_info(dev, "stick RGB LEDs ready (%s)\n",
+		 joypad->led_dual ? "dual ring" : "shared");
+	joypad_led_tick(joypad);
+	return 0;
+}
 static int joypad_input_setup(struct device *dev, struct joypad *joypad)
 {
 	struct input_polled_dev *poll_dev;
@@ -2142,6 +2746,13 @@ static int joypad_dt_parse(struct device *dev, struct joypad *joypad)
 
 	device_property_read_u32(dev, "amux-count",
 				&joypad->amux_count);
+	/*
+	 * Clamp a malformed DTB value before it sizes the adcs allocation.
+	 * The per-channel parse only handles channels 0..3 (ABS_X/Y/RX/RY),
+	 * so 4 is the hard maximum.
+	 */
+	if (joypad->amux_count < 1 || joypad->amux_count > 4)
+		joypad->amux_count = 1;
 
 	device_property_read_u32(dev, "poll-interval",
 				&joypad->poll_interval);
@@ -2208,6 +2819,17 @@ static int __maybe_unused joypad_suspend(struct device *dev)
 	if (joypad->level)
 		pwm_vibrator_stop(joypad);
 
+	/* blank the stick LEDs and stop the carrier while suspended */
+	if (joypad->led_have) {
+		mutex_lock(&joypad->lock);
+		if (joypad->led_running) {
+			joypad->led_running = false;
+			hrtimer_cancel(&joypad->led_timer);
+			joypad_led_set_gpios(joypad, 0);
+		}
+		mutex_unlock(&joypad->lock);
+	}
+
 	return 0;
 }
 
@@ -2218,6 +2840,10 @@ static int __maybe_unused joypad_resume(struct device *dev)
 
 	if (joypad->level)
 		pwm_vibrator_start(joypad);
+
+	/* restore the LED mode (re-arms the carrier if needed) */
+	if (joypad->led_have)
+		joypad_led_tick(joypad);
 
 	return 0;
 }
@@ -2265,6 +2891,13 @@ static int joypad_probe(struct platform_device *pdev)
 		return error;
 	}
 
+	/* stick-ring RGB LEDs (no-op on boards without the DT led-*-gpios) */
+	error = joypad_leds_setup(dev, joypad);
+	if (error) {
+		dev_err(dev, "stick LED setup failed!(err = %d)\n", error);
+		return error;
+	}
+
 	/* poll input device setup */
 	error = joypad_input_setup(dev, joypad);
 	if (error) {
@@ -2273,6 +2906,29 @@ static int joypad_probe(struct platform_device *pdev)
 	}
 
 	dev_info(dev, "%s : probe success\n", __func__);
+	return 0;
+}
+
+/*----------------------------------------------------------------------------*/
+static int joypad_remove(struct platform_device *pdev)
+{
+	struct joypad *joypad = platform_get_drvdata(pdev);
+
+	/* stop the LED carrier and blank the rings before we go */
+	if (joypad && joypad->led_have) {
+		/*
+		 * Mark the engine dead under ->lock so a poll tick that is about
+		 * to re-arm the carrier (joypad_led_tick start branch, same
+		 * lock) sees it and backs off. Otherwise it could hrtimer_start()
+		 * again after devres frees the gpio descriptors and the joypad.
+		 */
+		mutex_lock(&joypad->lock);
+		joypad->led_dead = true;
+		joypad->led_running = false;
+		mutex_unlock(&joypad->lock);
+		hrtimer_cancel(&joypad->led_timer);
+		joypad_led_set_gpios(joypad, 0);
+	}
 	return 0;
 }
 
@@ -2287,6 +2943,7 @@ MODULE_DEVICE_TABLE(of, joypad_of_match);
 /*----------------------------------------------------------------------------*/
 static struct platform_driver joypad_driver = {
 	.probe = joypad_probe,
+	.remove = joypad_remove,
 	.driver = {
 		.name = DRV_NAME,
 		.pm = &joypad_pm_ops,
