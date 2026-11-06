@@ -676,6 +676,12 @@ config LEDS_RGB13H
 	help
 	  Say Y here to include support for DL3020RGB13H LED controllers.
 
+config LEDS_KEROS
+	tristate "Keros pulse-count effect-LED controller (R36 Ultra)"
+	depends on LEDS_CLASS && OF && GPIOLIB
+	help
+	  GPIO pulse-count driver for the unmarked keros effect-LED IC.
+
 config LEDS_SC27XX_BLTC
 	tristate "LED support for the SC27xx breathing light controller"
 	depends on LEDS_CLASS && MFD_SC27XX_PMIC

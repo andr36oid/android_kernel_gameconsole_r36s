@@ -1,0 +1,262 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * EXPERIMENTAL - untested on hardware; stock-DTB-only OkRoll clone profile.
+ * Derived from the Kinhank K36 structural base and the supplied stock DTB.
+ * SARADC channels 0..3 are direct stick axes, not the EE analog mux.
+ */
+
+/dts-v1/;
+#include "rk3326-r36s-clone-ee-k36.dtsi"
+
+/ {
+	model = "andr36oid OkRoll clone (experimental)";
+	compatible = "andr36oid,okroll-clone",
+		     "rockchip,rk3326-evb-lp3-v12-linux", "rockchip,rk3326";
+
+	/* Four-axis description; the current two-axis ADC driver needs extending. */
+	play_joystick {
+		compatible = "adc-joystick", "play_joystick";
+		io-channels = <&saradc 0>, <&saradc 1>,
+			      <&saradc 2>, <&saradc 3>;
+		io-channel-names = "joy_x", "joy_y", "joy_rx", "joy_ry";
+		poll-interval = <30>;
+		keyup-threshold-microvolt = <1800000>;
+		debounce-interval = <100>;
+
+		left-x {
+			label = "left x";
+			adc-chan = <0>;
+			linux,code = <ABS_X>;
+			press-threshold-microvolt = <1750>;
+		};
+		left-y {
+			label = "left y";
+			adc-chan = <1>;
+			linux,code = <ABS_Y>;
+			press-threshold-microvolt = <1750>;
+		};
+		right-x {
+			label = "right x";
+			adc-chan = <2>;
+			linux,code = <ABS_RX>;
+			press-threshold-microvolt = <1750>;
+		};
+		right-y {
+			label = "right y";
+			adc-chan = <3>;
+			linux,code = <ABS_RY>;
+			press-threshold-microvolt = <1750>;
+		};
+	};
+
+	/* Stock declares no active wireless driver or attached Wi-Fi pwrseq. */
+	wireless-wlan {
+		/delete-property/ wifi_chip_type;
+		status = "disabled";
+	};
+
+	sdio-pwrseq {
+		compatible = "mmc-pwrseq-simple";
+	};
+
+	wireless-bluetooth {
+		compatible = "bluetooth-platdata";
+		clock-names = "ext_clock";
+		uart_rts_gpios = <&gpio1 RK_PC3 GPIO_ACTIVE_LOW>;
+		pinctrl-names = "default", "rts_gpio";
+		pinctrl-0 = <&uart0_rts>;
+		pinctrl-1 = <&uart0_rts_gpio>;
+		BT,wake_gpio = <&gpio0 RK_PA1 GPIO_ACTIVE_HIGH>;
+		BT,wake_host_irq = <&gpio0 RK_PA7 GPIO_ACTIVE_HIGH>;
+		status = "disabled";
+	};
+};
+
+/* Keep the base's Android button mapping, with sticks on their own input. */
+&joypad {
+	andr36oid,no-sticks;
+	/delete-property/ amux-a-gpios;
+	/delete-property/ amux-b-gpios;
+	/delete-property/ amux-en-gpios;
+	/delete-property/ amux-channel-mapping;
+	/delete-property/ invert-absrx;
+	/delete-property/ invert-absry;
+};
+
+/* No mux-enable output on GPIO2_B4: stock uses direct SARADC channels. */
+&btn_pins {
+	rockchip,pins =
+		<2 RK_PB5 RK_FUNC_GPIO &pcfg_pull_up>,
+		<2 RK_PB6 RK_FUNC_GPIO &pcfg_pull_up>,
+		<3 RK_PB2 RK_FUNC_GPIO &pcfg_pull_up>,
+		<3 RK_PB3 RK_FUNC_GPIO &pcfg_pull_up>,
+		<3 RK_PB4 RK_FUNC_GPIO &pcfg_pull_up>,
+		<3 RK_PB5 RK_FUNC_GPIO &pcfg_pull_up>,
+		<3 RK_PB6 RK_FUNC_GPIO &pcfg_pull_up>,
+		<3 RK_PC0 RK_FUNC_GPIO &pcfg_pull_up>,
+		<3 RK_PC1 RK_FUNC_GPIO &pcfg_pull_up>,
+		<3 RK_PC2 RK_FUNC_GPIO &pcfg_pull_up>,
+		<3 RK_PC3 RK_FUNC_GPIO &pcfg_pull_up>,
+		<3 RK_PC4 RK_FUNC_GPIO &pcfg_pull_up>,
+		<3 RK_PC5 RK_FUNC_GPIO &pcfg_pull_up>,
+		<3 RK_PC6 RK_FUNC_GPIO &pcfg_pull_up>,
+		<3 RK_PC7 RK_FUNC_GPIO &pcfg_pull_up>,
+		<3 RK_PD0 RK_FUNC_GPIO &pcfg_pull_up>,
+		<3 RK_PD1 RK_FUNC_GPIO &pcfg_pull_up>;
+};
+
+&backlight {
+	pwms = <&pwm1 0 25000 0>;
+	/delete-property/ andr36oid,kick-percent;
+	/delete-property/ andr36oid,kick-ms;
+	brightness-levels = <
+		  0   1   2   3   4   5   6   7   8   9  10  11  12  13  14  15
+		 16  17  18  19  20  21  22  23  24  25  26  27  28  29  30  31
+		 32  33  34  35  36  37  38  39  40  41  42  43  44  45  46  47
+		 48  49  50  51  52  53  54  55  56  57  58  59  60  61  62  63
+		 64  65  66  67  68  69  70  71  72  73  74  75  76  77  78  79
+		 80  81  82  83  84  85  86  87  88  89  90  91  92  93  94  95
+		 96  97  98  99 100 101 102 103 104 105 106 107 108 109 110 111
+		112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127
+		128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143
+		144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159
+		160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175
+		176 177 178 179 180 181 182 183 184 185 186 187 188 189 190 191
+		192 193 194 195 196 197 198 199 200 201 202 203 204 205 206 207
+		208 209 210 211 212 213 214 215 216 217 218 219 220 221 222 223
+		224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239
+		240 241 242 243 244 245 246 247 248 249 250 251 252 253 254 255
+	>;
+	default-brightness-level = <200>;
+};
+
+&dsi {
+	status = "okay";
+	panel@0 {
+		compatible = "sitronix,st7703", "simple-panel-dsi";
+		reset-gpios = <&gpio3 RK_PB7 GPIO_ACTIVE_LOW>;
+		power-supply = <&vcc_lcd_sw>;
+		prepare-delay-ms = <20>;
+		reset-delay-ms = <20>;
+		init-delay-ms = <20>;
+		enable-delay-ms = <120>;
+		disable-delay-ms = <20>;
+		unprepare-delay-ms = <20>;
+		width-mm = <153>;
+		height-mm = <85>;
+		dsi,flags = <0xa03>;
+		dsi,format = <MIPI_DSI_FMT_RGB888>;
+		dsi,lanes = <4>;
+		panel-init-sequence = [
+			39 00 04 b9 f1 12 83
+			39 00 06 b1 00 00 00 da 80
+			39 00 04 b2 00 13 70
+			39 00 0b b3 10 10 28 28 03 ff 00 00 00 00
+			15 00 02 b4 80
+			15 00 03 b5 0a 0a
+			15 00 03 b6 82 82
+			39 00 05 b8 26 62 f0 63
+			39 00 1c ba 33 81 05 f9 0e 0e 20 00 00 00 00 00 00 00 44 25 00 90 0a 00 00 01 4f 01 00 00 37
+			15 00 02 bc 47
+			39 00 04 bf 02 11 00
+			39 00 0a c0 73 73 50 50 00 00 12 50 00
+			39 00 0d c1 53 00 32 32 77 d1 cc cc 77 77 33 33
+			39 00 07 c6 82 00 bf ff 00 ff
+			39 00 07 c7 b8 00 0a 00 00 00
+			39 00 05 c8 10 40 1e 02
+			15 00 02 cc 0b
+			39 00 23 e0 00 07 0d 37 35 3f 41 44 06 0c 0d 0f 11 10 12 14 1a 00 07 0d 37 35 3f 41 44 06 0c 0d 0f 11 10 12 14 1a
+			39 00 0f e3 07 07 0b 0b 0b 0b 00 00 00 00 ff 00 c0 10
+			39 00 40 e9 c8 10 02 00 00 b0 b1 11 31 23 28 80 b0 b1 27 08 00 04 02 00 00 00 00 04 02 00 00 00 88 88 ba 60 24 08 88 88 88 88 88 88 88 ba 71 35 18 88 88 88 88 88 00 00 00 01 00 00 00 00 00 00 00 00 00
+			39 00 3e ea 97 0a 82 02 03 07 00 00 00 00 00 00 81 88 ba 17 53 88 88 88 88 88 88 80 88 ba 06 42 88 88 88 88 88 88 23 00 00 02 80 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+			39 00 04 ef ff ff 01
+			05 c8 01 11
+			05 14 01 29
+		];
+		panel-exit-sequence = [05 00 01 28 05 00 01 10];
+		display-timings {
+			/delete-node/ timing1;
+			/delete-node/ timing2;
+		};
+	};
+};
+
+&timing0 {
+	clock-frequency = <30000000>;
+	hactive = <640>;
+	vactive = <480>;
+	hfront-porch = <150>;
+	hsync-len = <50>;
+	hback-porch = <150>;
+	vfront-porch = <20>;
+	vsync-len = <6>;
+	vback-porch = <12>;
+	hsync-active = <0>;
+	vsync-active = <0>;
+	de-active = <0>;
+	pixelclk-active = <0>;
+};
+
+/* Stock: VOPB -> DSI input 0 -> panel port 0 (reciprocal endpoints). */
+&dsi_in_vopb {
+	status = "okay";
+	remote-endpoint = <&vopb_out_dsi>;
+};
+&vopb_out_dsi {
+	remote-endpoint = <&dsi_in_vopb>;
+};
+&dsi_out_panel {
+	remote-endpoint = <&dsi_in_panel>;
+};
+&dsi_in_panel {
+	remote-endpoint = <&dsi_out_panel>;
+};
+&dsi_in_vopl {
+	status = "disabled";
+};
+&route_dsi {
+	status = "okay";
+	connect = <&vopb_out_dsi>;
+};
+
+&rk817 {
+	battery {
+		ocv_table = <3500 3531 3558 3578 3595 3611 3628
+			3649 3675 3718 3767 3810 3849 3886
+			3919 3958 4006 4051 4081 4105 4172>;
+		design_capacity = <2808>;
+		design_qmax = <3089>;
+		bat_res = <150>;
+		power_off_thresd = <3500>;
+		zero_algorithm_vol = <3850>;
+		max_soc_offset = <60>;
+		dc_det_gpio = <&gpio3 RK_PA5 GPIO_ACTIVE_HIGH>;
+		charge_red_gpio = <&gpio0 RK_PC1 GPIO_ACTIVE_HIGH>;
+		charge_blue_gpio = <&gpio0 RK_PA0 GPIO_ACTIVE_HIGH>;
+		work_red_gpio = <&gpio0 RK_PB4 GPIO_ACTIVE_HIGH>;
+		work_blue_gpio = <&gpio0 RK_PB3 GPIO_ACTIVE_HIGH>;
+	};
+	charger {
+		min_input_voltage = <4500>;
+		max_input_current = <800>;
+		max_chrg_current = <800>;
+		max_chrg_voltage = <4200>;
+		chrg_finish_cur = <300>;
+		dc_det_gpio = <&gpio3 RK_PA5 GPIO_ACTIVE_HIGH>;
+		charge_red_gpio = <&gpio0 RK_PC1 GPIO_ACTIVE_HIGH>;
+		charge_blue_gpio = <&gpio0 RK_PA0 GPIO_ACTIVE_HIGH>;
+		work_red_gpio = <&gpio0 RK_PB4 GPIO_ACTIVE_HIGH>;
+		work_blue_gpio = <&gpio0 RK_PB3 GPIO_ACTIVE_HIGH>;
+		dc_det_adc = <0>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&led_pins>;
+	};
+};
+
+&pinctrl {
+	sdio-pwrseq {
+		wifi_enable_h: wifi-enable-h {
+			rockchip,pins = <0 RK_PA2 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+	};
+};

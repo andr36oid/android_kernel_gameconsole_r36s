@@ -643,13 +643,11 @@ static int rk817_playback_path_get(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
-static int rk817_playback_path_put_locked(struct snd_kcontrol *kcontrol,
-				   struct snd_ctl_elem_value *ucontrol)
+static int __rk817_set_playback_path(struct snd_soc_component *component,
+				     long int target)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
 	struct rk817_codec_priv *rk817 = snd_soc_component_get_drvdata(component);
 	long int pre_path;
-	long int target = ucontrol->value.integer.value[0];
 
 	/* No usable electronic HP detect on this board: drive both outputs. */
 	if (force_spk_hp && target != OFF)
@@ -827,6 +825,15 @@ static int rk817_playback_path_put_locked(struct snd_kcontrol *kcontrol,
 	}
 
 	return 0;
+}
+
+static int rk817_playback_path_put_locked(struct snd_kcontrol *kcontrol,
+				   struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+
+	return __rk817_set_playback_path(component,
+					 ucontrol->value.integer.value[0]);
 }
 
 static int rk817_playback_path_put(struct snd_kcontrol *kcontrol,
@@ -1022,6 +1029,36 @@ static int rk817_set_dai_fmt(struct snd_soc_dai *codec_dai,
 	return 0;
 }
 
+/*
+ * Make sure the analog playback stage is really powered for this stream.
+ *
+ * rk817_playback_path_put() early-returns when the requested path equals the
+ * one it last set, so once a path is chosen it never re-runs its power-up.
+ * A system suspend powers the codec's analog blocks down while the software
+ * playback_path stays put (and on this card the ASoC component resume does not
+ * run - its DBG line never appears across a real suspend/resume), so the DAC
+ * and Class-D amp stay off even though the mixer still reads SPK_HP: the
+ * speaker-enable GPIO toggles and the DAC digital-unmutes, but there is no
+ * analog output. force_spk_hp makes it permanent by pinning the path.
+ *
+ * Confirmed on hardware: a bare power_up is NOT enough to recover (the APLL /
+ * digital-enable state needs a full down-then-up), but driving the path to OFF
+ * and back - exactly what a path change does - restores sound. So replay that
+ * transition here. hw_params runs on every playback start in process context,
+ * which is where this is called from.
+ */
+static void rk817_repower_playback(struct snd_soc_component *component)
+{
+	struct rk817_codec_priv *rk817 = snd_soc_component_get_drvdata(component);
+	long int path = rk817->playback_path;
+
+	if (path == OFF)
+		return;
+
+	__rk817_set_playback_path(component, OFF);
+	__rk817_set_playback_path(component, path);
+}
+
 static int rk817_hw_params(struct snd_pcm_substream *substream,
 			   struct snd_pcm_hw_params *params,
 			    struct snd_soc_dai *dai)
@@ -1050,6 +1087,18 @@ static int rk817_hw_params(struct snd_pcm_substream *substream,
 		break;
 	default:
 		return -EINVAL;
+	}
+
+	/*
+	 * Make sure the analog playback stage is actually powered for this
+	 * stream. The path's power-up is otherwise only written on a path
+	 * change, which does not happen after a suspend has powered the codec
+	 * down with playback_path still set (see rk817_repower_playback).
+	 */
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+		mutex_lock(&rk817->volume_lock);
+		rk817_repower_playback(component);
+		mutex_unlock(&rk817->volume_lock);
 	}
 
 	return 0;
@@ -1384,6 +1433,19 @@ static int rk817_codec_parse_dt_property(struct device *dev,
 		dev_err(dev, "%s() Can not get child: codec\n",
 			__func__);
 		return -ENODEV;
+	}
+
+	/*
+	 * Clones whose headphone detect never reads right (mechanical jack, or
+	 * a hp-det GPIO that floats) set this so the board defaults to driving
+	 * speaker and headphones together instead of muting the speaker on a
+	 * bogus "plugged" reading. The force_spk_hp module param still wins at
+	 * runtime, so Kernel Tweaks can turn it back off.
+	 */
+	if (of_property_read_bool(node, "rockchip,force-spk-hp")) {
+		force_spk_hp = true;
+		dev_info(dev, "%s: rockchip,force-spk-hp: default to SPK_HP\n",
+			 __func__);
 	}
 
 	rk817->hp_ctl_gpio = devm_gpiod_get_optional(dev, "hp-ctl",

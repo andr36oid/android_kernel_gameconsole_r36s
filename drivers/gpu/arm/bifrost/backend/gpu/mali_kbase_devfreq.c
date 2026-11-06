@@ -683,7 +683,10 @@ int kbase_devfreq_init(struct kbase_device *kbdev)
 	dp = &kbdev->devfreq_profile;
 
 	dp->initial_freq = kbdev->current_freqs[0];
-	dp->polling_ms = 100;
+	/* 50 ms, matching the Rockchip vendor Mali: simple_ondemand re-evaluates the
+	 * GPU OPP only once per poll, so at 100 ms the G31 can sit a low OPP for ~6
+	 * frames at 60 fps after a load spike. Halving the poll cuts that ramp lag. */
+	dp->polling_ms = 50;
 	dp->target = kbase_devfreq_target;
 	dp->get_dev_status = kbase_devfreq_status;
 	dp->get_cur_freq = kbase_devfreq_cur_freq;

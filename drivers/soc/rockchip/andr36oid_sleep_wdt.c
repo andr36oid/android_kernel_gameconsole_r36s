@@ -398,10 +398,10 @@ static int sleep_wdt_probe(struct platform_device *pdev)
 	sw.regs = of_iomap(np, 0);
 	sw.clk = of_clk_get(np, 0);
 	sw.rst = of_reset_control_get_exclusive(np, NULL);
-	sleep_wdt_setup_irq(&pdev->dev, np);
-	of_node_put(np);
-	if (!sw.regs)
-		return -ENOMEM;
+	if (!sw.regs) {
+		ret = -ENOMEM;
+		goto err_node;
+	}
 	if (IS_ERR(sw.clk)) {
 		ret = PTR_ERR(sw.clk);
 		goto err_unmap;
@@ -424,6 +424,10 @@ static int sleep_wdt_probe(struct platform_device *pdev)
 	sw.top = WDT_MAX_TOP;
 	reset_control_deassert(sw.rst);
 
+	/* only now that nothing below can fail: the irq + cpu_debug maps have no unwind */
+	sleep_wdt_setup_irq(&pdev->dev, np);
+	of_node_put(np);
+
 	sleep_wdt_find_rk_timer();
 	register_syscore_ops(&sleep_wdt_syscore_ops);
 	sw_ready = true;
@@ -440,6 +444,8 @@ err_clk:
 	clk_put(sw.clk);
 err_unmap:
 	iounmap(sw.regs);
+err_node:
+	of_node_put(np);
 	return ret;
 }
 
@@ -497,24 +503,36 @@ static int sleep_cpus_pm_notify(struct notifier_block *nb, unsigned long action,
 
 	switch (action) {
 	case PM_SUSPEND_PREPARE:
-		if (!early_cpu_off)
-			break;
-		sleep_cpus_watch(true);
-		lock_device_hotplug();
-		for_each_online_cpu(cpu) {
-			if (cpu == cpumask_first(cpu_online_mask))
-				continue;
-			dev = get_cpu_device(cpu);
-			ret = dev ? device_offline(dev) : -ENODEV;
-			if (ret == 0)
-				cpumask_set_cpu(cpu, &early_off_cpus);
-			else if (ret < 0)
-				pr_warn("sleep: CPU%d didn't go down before suspend: %d\n",
-					cpu, ret);
-			sleep_wdt_kick();
+		if (early_cpu_off) {
+			sleep_cpus_watch(true);
+			lock_device_hotplug();
+			for_each_online_cpu(cpu) {
+				if (cpu == cpumask_first(cpu_online_mask))
+					continue;
+				dev = get_cpu_device(cpu);
+				ret = dev ? device_offline(dev) : -ENODEV;
+				if (ret == 0)
+					cpumask_set_cpu(cpu, &early_off_cpus);
+				else if (ret < 0)
+					pr_warn("sleep: CPU%d didn't go down before suspend: %d\n",
+						cpu, ret);
+				sleep_wdt_kick();
+			}
+			unlock_device_hotplug();
 		}
-		unlock_device_hotplug();
-		/* stays armed: the devices' .prepare goes on from here */
+		/*
+		 * Disarm across suspend_freeze_processes(): it can take up to
+		 * freeze_timeout_msecs (20 s) for user tasks and again for kernel
+		 * threads, and nothing kicks the watchdog in that window (the
+		 * awake-watch worker is freezable), while the hardware top is only
+		 * ~21.5 s. A slow-but-legitimate freeze (a task stuck on failing-SD
+		 * I/O) would otherwise trip the watchdog and reset instead of letting
+		 * the freeze timeout abort suspend cleanly. freeze is a normal kernel
+		 * wait, not a CPU/bus hang, so it is out of this watchdog's scope; the
+		 * first device .prepare (sleep_wdt_prepare, this driver registers
+		 * before the DT devices) re-arms it right after the freeze.
+		 */
+		sleep_cpus_watch(false);
 		break;
 	case PM_POST_SUSPEND:
 		if (cpumask_empty(&early_off_cpus)) {

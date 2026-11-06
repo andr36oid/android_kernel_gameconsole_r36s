@@ -49,7 +49,12 @@
 
 &joypad {
 	switch-rxy;
-	invert-absry;
+	/*
+	 * No invert-absry here even though R46H has it: a reporter with the
+	 * R46H DTB on an R45H saw the right stick's up/down reversed, so this
+	 * board wires the right-stick Y opposite to R46H. Everything else on
+	 * the right stick (the switch-rxy swap) still matches.
+	 */
 	/* no Fn button (handhelds.wiki); Android offers a stand-in */
 	andr36oid,missing-buttons = "fn";
 };

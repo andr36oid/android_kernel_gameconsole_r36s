@@ -1488,6 +1488,12 @@ static int rk915_pm_notifier(struct notifier_block *nb, unsigned long action,
 			 */
 			RPU_INFO_HAL("%s: PM_POST_SUSPEND\n", __func__);
 			hpriv->during_pm_resume = 0;
+			if (hpriv->defer_resume_wake) {
+				hpriv->defer_resume_wake = 0;
+				/* resume is done, clocks are stable: safe to wake
+				 * (and recover) the fw without racing the SoC. */
+				rk915_notify_pm(hpriv, 1);
+			}
 			break;
 
 		case PM_RESTORE_PREPARE:
@@ -1499,6 +1505,10 @@ static int rk915_pm_notifier(struct notifier_block *nb, unsigned long action,
 			/* System has restored from hibernate */
 			RPU_INFO_HAL("%s: PM_POST_RESTORE\n", __func__);
 			hpriv->during_pm_resume = 0;
+			if (hpriv->defer_resume_wake) {
+				hpriv->defer_resume_wake = 0;
+				rk915_notify_pm(hpriv, 1);
+			}
 			break;
 
 		default:

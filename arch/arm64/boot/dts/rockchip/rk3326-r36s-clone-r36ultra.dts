@@ -121,26 +121,15 @@
 	keep-power-in-suspend;
 };
 
-&leds {
-	/* RGB LED at the power button, driven by the stock gamepad driver */
-	rgb-red {
-		label = "red:status";
-		gpios = <&gpio2 RK_PA2 GPIO_ACTIVE_HIGH>;
-		linux,default-trigger = "none";
-	};
-
-	rgb-green {
-		label = "green:status";
-		gpios = <&gpio2 RK_PA1 GPIO_ACTIVE_HIGH>;
-		linux,default-trigger = "none";
-	};
-
-	rgb-blue {
-		label = "blue:status";
-		gpios = <&gpio2 RK_PA0 GPIO_ACTIVE_HIGH>;
-		linux,default-trigger = "none";
-	};
-};
+/*
+ * The gpio2 PA2/PA1/PA0 RGB is NOT a plain status LED: on stock these are the
+ * micro,gamepad red/green/blue-gpio, owned by the gamepad driver - i.e. the
+ * lighting around the analog sticks. So instead of dumb on/off gpio-leds we
+ * hand them to the joypad LED engine below, which software-PWMs them for
+ * brightness, breathing, rainbow, stick-direction and battery effects. The
+ * board's own power/charge status LED (GPIO0_C1, base gpio_leds) is left as
+ * is. led_pins still muxes PA0-2 to GPIO; the engine claims them on probe.
+ */
 
 /*
  * rumble motor, driven by the joypad so games see it as gamepad rumble.
@@ -151,6 +140,20 @@
  */
 &joypad {
 	rumble-gpios = <&gpio3 RK_PA6 GPIO_ACTIVE_HIGH>;
+
+	/*
+	 * Stick-ring RGB. One shared trio here; a board that wires the left
+	 * and right rings separately can add led-{red,green,blue}-right-gpios
+	 * and the engine drives them independently. Default: solid accent
+	 * orange; userspace overwrites the colour with the real system accent.
+	 */
+	led-red-gpios   = <&gpio2 RK_PA2 GPIO_ACTIVE_HIGH>;
+	led-green-gpios = <&gpio2 RK_PA1 GPIO_ACTIVE_HIGH>;
+	led-blue-gpios  = <&gpio2 RK_PA0 GPIO_ACTIVE_HIGH>;
+	andr36oid,led-default-mode = "static";
+	andr36oid,led-default-color = <0xff7a00>;
+	andr36oid,led-default-brightness = <160>;
+	andr36oid,led-default-speed = <40>;
 };
 
 &led_pins {
@@ -161,6 +164,44 @@
 		<2 RK_PA1 RK_FUNC_GPIO &pcfg_pull_none>,
 		<2 RK_PA2 RK_FUNC_GPIO &pcfg_pull_none>,
 		<3 RK_PA6 RK_FUNC_GPIO &pcfg_pull_down>;
+};
+
+/*
+ * Stick-ring "keros" effect-LED IC. It is NOT an I2C device even though the
+ * stock DT places fb_keros@1C on i2c1: the chip is driven by a pulse-count
+ * frame on a single control GPIO (GPIO0_B3), gated by a power-enable GPIO
+ * (GPIO0_B6, the stock "led-gpio"). GPIO0_B3 is free on this board: on EE
+ * clones dc_det moved to gpio3 PA5 (rk3326-r36s-clone-ee.dtsi) and the
+ * pmic_int group was reduced to GPIO0_B2, so nothing else muxes or claims
+ * B3 or B6.
+ *
+ * leds-keros registers /sys/class/leds/keros::ambient, max_brightness 11:
+ * 0 = off (enable dropped, chip unpowered, guaranteed dark), 1..9 = built-in
+ * effects, 11 = chip init/off. It leaves the rings dark at probe.
+ *
+ * This is a different bank from the gpio2 PA0-2 joypad RGB above and is left
+ * in place alongside it; the two are expected to be different physical LEDs.
+ * Confirm on hardware which rings each path lights before removing either.
+ */
+/ {
+	keros_leds: keros-leds {
+		compatible = "keros,pulse-leds";
+		ctrl-gpios   = <&gpio0 RK_PB3 GPIO_ACTIVE_HIGH>;   /* VERIFY pin on HW */
+		enable-gpios = <&gpio0 RK_PB6 GPIO_ACTIVE_HIGH>;   /* = stock led-gpio */
+		pinctrl-names = "default";
+		pinctrl-0 = <&keros_pins>;
+		status = "okay";
+	};
+};
+
+&pinctrl {
+	keros {
+		keros_pins: keros-pins {
+			rockchip,pins =
+				<0 RK_PB3 RK_FUNC_GPIO &pcfg_pull_none>,
+				<0 RK_PB6 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+	};
 };
 
 &rk817 {
@@ -183,4 +224,48 @@
 		power_off_thresd = <3500>;
 		zero_algorithm_vol = <3850>;
 	};
+};
+
+/*
+ * Audio. The stock R36 Ultra uses rockchip,multicodecs-card - confirmed by
+ * reading the stock EmuELEC dtb off the eMMC (rk3326-evb-lp3-v12-linux.dtb):
+ * multicodecs-card + rk817 codec, spk-ctl on gpio3 PA7, hp-det on gpio2 PC6.
+ *
+ * The generic simple-audio-card the base board ships DOES register a card
+ * here, but on this board it never establishes a powered playback route to the
+ * rk817 output stage (boot log: "no sink/source widget" for the codec's
+ * MIC_IN/HPOL/HPOR pins). The PCM runs and the DMA pointer advances, but there
+ * is no analog output - dead silent even with the path forced to SPK_HP and the
+ * hardware master switch on. Only the rk817-aware multicodecs machine driver
+ * sets up the DAI/DAPM this codec needs, so match stock: use multicodecs-card
+ * (now built via CONFIG_SND_SOC_ROCKCHIP_MULTICODECS in lineageos_r36s_defconfig).
+ *
+ * Keep force_spk_hp as belt-and-braces: this board's jack detect is unreliable,
+ * so force every active playback to SPK_HP and let the jack's own switch mute
+ * the speaker when headphones go in. KT "Speaker + headphones always on" reads
+ * this as the default and can still turn it off at runtime.
+ */
+/ {
+	/delete-node/ rk817-sound;
+};
+
+/ {
+	rk817-sound {
+		compatible = "rockchip,multicodecs-card";
+		rockchip,card-name = "rockchip-rk817";
+		rockchip,format = "i2s";
+		rockchip,mclk-fs = <256>;
+		rockchip,cpu = <&i2s1_2ch>;
+		rockchip,codec = <&rk817_codec>;
+		rockchip,codec-hp-det;
+	};
+};
+
+/* Match the stock codec tuning for this board: louder speaker/headphone volume
+ * and the amp mute delay stock uses, plus the force-speaker-path default. */
+&rk817_codec {
+	spk-volume = <0x0f>;
+	hp-volume = <0x0f>;
+	spk-mute-delay-ms = <500>;
+	rockchip,force-spk-hp;
 };

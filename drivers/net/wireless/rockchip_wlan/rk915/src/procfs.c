@@ -15,7 +15,9 @@
 #include "version.h"
 #include "hal_io.h"
 
-unsigned int lpw_no_sleep = 0;
+/* Default to no firmware sleep: sleep causes a reason-2 deauth loop on the
+ * R36 Ultra's RK915 (see the -DRPU_NO_SLEEP_FLAG note in the Makefile). */
+unsigned int lpw_no_sleep = 1;
 module_param(lpw_no_sleep, int, 0);
 MODULE_PARM_DESC(lpw_no_sleep, "lpw sleep or not");
 
