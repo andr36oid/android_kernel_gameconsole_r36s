@@ -5,6 +5,10 @@ lib-y		:= clear_user.o delay.o copy_from_user.o		\
 		   memcmp.o strcmp.o strncmp.o strlen.o strnlen.o	\
 		   strchr.o strrchr.o tishift.o
 
+# obj-, not lib-: it must override the weak crc32_le/__crc32c_le in lib/crc32.c,
+# and a lib.a member is only pulled in for otherwise undefined symbols.
+obj-$(CONFIG_CRC32) += crc32.o
+
 # Tell the compiler to treat all general purpose registers (with the
 # exception of the IP registers, which are already handled by the caller
 # in case of a PLT) as callee-saved, which allows for efficient runtime

@@ -11,6 +11,10 @@
 u32 __pure crc32_le(u32 crc, unsigned char const *p, size_t len);
 u32 __pure crc32_be(u32 crc, unsigned char const *p, size_t len);
 
+/* Table-driven fallbacks for architectures that override crc32_le/__crc32c_le */
+u32 __pure crc32_le_base(u32 crc, unsigned char const *p, size_t len);
+u32 __pure __crc32c_le_base(u32 crc, unsigned char const *p, size_t len);
+
 /**
  * crc32_le_combine - Combine two crc32 check values into one. For two
  * 		      sequences of bytes, seq1 and seq2 with lengths len1
